@@ -234,6 +234,16 @@ test('players with no real roster that week are reported as missing data', () =>
   assert.deepEqual(missing.get(106), [3, 4]);
 });
 
+test('no trades replays reality exactly (the baseline shown before a trade is built)', () => {
+  const league = fourTeams();
+  const res = E.simulate(league, { myTeamId: 1, effectiveWeek: 1, trades: [] });
+  assert.deepEqual(res.errors, []);
+  assert.equal(res.overrides.length, 0);
+  assert.equal(res.teamWeeks.length, 0);
+  for (const m of res.matchups) assert.deepEqual(m.sim, m.real);
+  assert.deepEqual(res.standings.sim, res.standings.real);
+});
+
 test('invalid trades are rejected with a clear error', () => {
   const league = fourTeams();
   const res = E.simulate(league, { myTeamId: 1, effectiveWeek: 1, trades: [{ partnerId: 2, send: [304], receive: [204] }] });

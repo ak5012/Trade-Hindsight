@@ -7,6 +7,7 @@
   'use strict';
   const Espn = window.THEspn;
   const Engine = window.THEngine;
+  const VERSION = (() => { try { return chrome.runtime.getManifest().version; } catch (e) { return ''; } })();
 
   const SLOT_ORDER = [0, 1, 2, 3, 4, 5, 6, 23, 7, 16, 17, 18, 8, 9, 10, 11, 12, 13, 14, 15, 19, 20, 21];
 
@@ -14,9 +15,10 @@
     host: null, root: null, open: false,
     ctx: null, league: null,
     phase: 'idle', progress: '', error: null,
-    myTeamId: null, effectiveWeek: null,
+    myTeamId: null, effectiveWeek: null, completed: [],
     trades: [],
     result: null, runErrors: [], running: false,
+    runId: 0, cardLoads: new Map(),
     detailTeamId: null, expanded: new Set(),
   };
 
@@ -53,6 +55,40 @@
     const s = ['th', 'st', 'nd', 'rd'], v = n % 100;
     return n + (s[(v - 20) % 10] || s[v] || s[0]);
   };
+
+  // ---------------------------------------------------------------------------
+  // pictures: headshots and logos, with an initials badge when one won't load
+  // ---------------------------------------------------------------------------
+  const brokenImages = new Set(); // URLs that failed once are not requested again
+
+  const initials = (name) => (name || '?').replace(/[^A-Za-z0-9 ]/g, '').split(/\s+/).filter(Boolean)
+    .slice(0, 2).map((w) => w[0]).join('').toUpperCase() || '?';
+
+  function picture(url, cls, fallbackText, hue) {
+    const badge = () => h('span', {
+      class: `${cls} badge`, 'aria-hidden': 'true',
+      style: hue === undefined ? null : `background: hsl(${hue} 38% 40%); color: #fff;`,
+    }, fallbackText);
+    if (!url || brokenImages.has(url)) return badge();
+    return h('img', {
+      class: cls, src: url, alt: '', 'aria-hidden': 'true', loading: 'lazy', decoding: 'async', referrerpolicy: 'no-referrer',
+      onerror: (e) => { brokenImages.add(url); e.target.replaceWith(badge()); },
+    });
+  }
+
+  function playerPic(pid, size) {
+    const p = state.league.players[pid] || {};
+    const isDst = p.pos === 'D/ST' || pid < 0;
+    return picture(Espn.headshotUrl(pid, p), `avatar ${size || ''} ${isDst ? 'dst' : ''}`, isDst ? 'D' : initials(p.name));
+  }
+
+  function teamPic(id, size) {
+    const t = state.league.teams.find((x) => x.id === Number(id)) || {};
+    return picture(t.logo, `logo ${size || ''}`, (t.abbrev || initials(t.name)).slice(0, 3), (Number(id) * 47) % 360);
+  }
+
+  /** A fantasy team's logo and name, side by side. */
+  const teamLabel = (id, size) => h('span', { class: 'team' }, teamPic(id, size), h('span', { class: 'team-name' }, teamName(id)));
 
   // ---------------------------------------------------------------------------
   // mount / open / close
@@ -106,9 +142,12 @@
   }
 
   async function loadSeason(season, opts) {
+    state.runId++; // drop any replay still running for the previous load
     state.phase = 'loading';
     state.error = null;
     state.result = null;
+    state.runErrors = [];
+    state.cardLoads = new Map();
     state.progress = 'Reading league settings';
     render();
     try {
@@ -127,60 +166,93 @@
         render();
         return;
       }
-      const completed = Engine.completedWeeks(league);
+      state.completed = Engine.completedWeeks(league);
       const swidTeam = Espn.findMyTeam(league, Espn.readSwid(document.cookie));
       const urlTeam = league.teams.some((t) => t.id === state.ctx.teamId) ? state.ctx.teamId : null;
       state.myTeamId = swidTeam || urlTeam || league.teams[0].id;
-      state.effectiveWeek = completed[0];
+      state.effectiveWeek = state.completed[0];
       state.trades = [{ partnerId: null, send: [], receive: [] }];
       state.detailTeamId = state.myTeamId;
+      state.expanded = new Set();
       state.phase = 'ready';
     } catch (err) {
       state.phase = 'error';
       state.error = err && err.message ? err.message : String(err);
     }
-    render();
+    if (state.phase === 'ready') run();
+    else render();
   }
 
+  /** Trades with a partner and at least one player. Half-built ones wait until they're complete. */
+  function completeTrades() {
+    return state.trades
+      .filter((t) => t.partnerId && (t.send.length || t.receive.length))
+      .map((t) => ({ partnerId: t.partnerId, send: [...t.send], receive: [...t.receive] }));
+  }
+
+  /**
+   * Points for weeks a player sat on no real roster come from ESPN player cards.
+   * One request per player, shared by every replay that needs it. Returns the
+   * requests still in flight that this replay has to wait for.
+   */
+  function loadMissingCards(league, missing) {
+    const fresh = new Map([...missing].filter(([pid]) => !state.cardLoads.has(pid)));
+    if (fresh.size) {
+      const load = Espn.fetchPlayerCards(league, fresh).catch((err) => {
+        for (const pid of fresh.keys()) state.cardLoads.delete(pid); // retried on the next change
+        const msg = `Could not read some players' points from ESPN (${err.message}). They count as 0 in weeks they were on no roster.`;
+        if (!league.warnings.includes(msg)) league.warnings.push(msg);
+      });
+      load.then(() => { load.done = true; });
+      for (const pid of fresh.keys()) state.cardLoads.set(pid, load);
+    }
+    return [...new Set([...missing.keys()].map((pid) => state.cardLoads.get(pid)))].filter((p) => p && !p.done);
+  }
+
+  // Replays the season for the current trades. Called after every change, so
+  // the results always match the builder; a newer call replaces an older one.
   async function run() {
+    const id = ++state.runId;
     const league = state.league;
-    const scenario = {
-      myTeamId: state.myTeamId,
-      effectiveWeek: state.effectiveWeek,
-      trades: state.trades.map((t) => ({ partnerId: t.partnerId, send: [...t.send], receive: [...t.receive] })),
+    const scenario = { myTeamId: state.myTeamId, effectiveWeek: state.effectiveWeek, trades: completeTrades() };
+    const finish = (result, errors) => {
+      if (id !== state.runId) return;
+      state.running = false;
+      state.runErrors = errors;
+      state.result = errors.length ? null : result;
+      render();
     };
-    state.running = true;
-    state.runErrors = [];
-    render();
     try {
       const own = Engine.resolveOwnership(league, scenario);
-      if (own.errors.length) {
-        state.runErrors = own.errors;
-        state.result = null;
-      } else {
-        const missing = Engine.missingPlayerWeeks(league, own, Engine.completedWeeks(league));
-        if (missing.size) await Espn.fetchPlayerCards(league, missing);
-        const res = Engine.simulate(league, scenario);
-        if (res.errors.length) state.runErrors = res.errors;
-        else {
-          state.result = res;
-          state.scrollToResults = true;
-          state.detailTeamId = state.myTeamId;
-          state.expanded = new Set();
-        }
+      if (own.errors.length) return finish(null, own.errors);
+      const pending = loadMissingCards(league, Engine.missingPlayerWeeks(league, own, state.completed));
+      if (pending.length) {
+        state.running = true;
+        render();
+        await Promise.all(pending);
+        if (id !== state.runId) return;
       }
+      const res = Engine.simulate(league, scenario);
+      finish(res, res.errors);
     } catch (err) {
-      state.runErrors = [err && err.message ? err.message : String(err)];
+      finish(null, [err && err.message ? err.message : String(err)]);
     }
-    state.running = false;
-    render();
   }
 
   // ---------------------------------------------------------------------------
   // rendering
   // ---------------------------------------------------------------------------
+
+  // The panel is rebuilt on every change, so these areas keep their scroll
+  // position, and the focused control (by data-key) keeps focus.
+  const SCROLLERS = ['.layout', '.builder', '.results', '.table-wrap'];
+
   function render() {
     if (!state.root) return;
+    const scroll = SCROLLERS.map((sel) => [...state.root.querySelectorAll(sel)].map((el) => [el.scrollTop, el.scrollLeft]));
+    const active = state.root.activeElement;
+    const focusKey = active ? active.getAttribute('data-key') : null;
+
     state.root.innerHTML = '';
     state.root.appendChild(h('style', { text: CSS }));
     if (!state.open) return;
@@ -188,10 +260,14 @@
       header(),
       body());
     state.root.appendChild(h('div', { class: 'scrim', onclick: (e) => { if (e.target === e.currentTarget) close(); } }, panel));
-    if (state.scrollToResults) {
-      state.scrollToResults = false;
-      const target = state.root.querySelector('.results');
-      if (target && window.innerWidth <= 900) target.scrollIntoView({ block: 'start' });
+
+    SCROLLERS.forEach((sel, i) => state.root.querySelectorAll(sel).forEach((el, j) => {
+      const was = scroll[i][j];
+      if (was) [el.scrollTop, el.scrollLeft] = was;
+    }));
+    if (focusKey) {
+      const el = state.root.querySelector(`[data-key="${focusKey}"]`);
+      if (el) el.focus({ preventScroll: true });
     }
   }
 
@@ -251,13 +327,13 @@
   function seasonAverage(pid) {
     const p = state.league.players[pid];
     if (!p) return null;
-    const vals = Engine.completedWeeks(state.league)
+    const vals = state.completed
       .map((sp) => p.weekly[sp] && p.weekly[sp].pts)
       .filter((v) => typeof v === 'number');
     return vals.length ? vals.reduce((a, b) => a + b, 0) / vals.length : null;
   }
 
-  function playerPicker(teamId, selectedIds, legend) {
+  function playerPicker(teamId, selectedIds, legend, key) {
     const list = rosterAt(teamId, state.effectiveWeek);
     const isOn = (pid) => selectedIds.includes(pid);
     return h('fieldset', { class: 'picker' },
@@ -268,17 +344,22 @@
         const slot = Engine.slotLabel(e.slotId);
         return h('label', { class: `pick ${isOn(e.playerId) ? 'on' : ''}` },
           h('input', {
-            type: 'checkbox', checked: isOn(e.playerId),
+            type: 'checkbox', checked: isOn(e.playerId), 'data-key': `${key}:${e.playerId}`,
             onchange: (ev) => {
               const i = selectedIds.indexOf(e.playerId);
               if (ev.target.checked && i < 0) selectedIds.push(e.playerId);
               if (!ev.target.checked && i >= 0) selectedIds.splice(i, 1);
-              state.result = null;
-              render();
+              run();
             },
           }),
-          h('span', { class: 'pname' }, p.name || `Player ${e.playerId}`),
-          h('span', { class: 'pmeta' }, `${p.pos || ''}${slot === 'BE' ? ', bench' : slot === 'IR' ? ', IR' : ''}`),
+          playerPic(e.playerId),
+          h('span', { class: 'pinfo' },
+            h('span', { class: 'pname' }, p.name || `Player ${e.playerId}`),
+            h('span', { class: 'pmeta' }, [
+              p.pos || '',
+              p.pos !== 'D/ST' && Espn.proTeamAbbrev(p.proTeamId) ? ` · ${Espn.proTeamAbbrev(p.proTeamId)}` : '',
+              slot === 'BE' ? ' · Bench' : slot === 'IR' ? ' · IR' : '',
+            ].join(''))),
           h('span', { class: 'pavg', title: 'Average real points per week this season' }, avg === null ? '' : avg.toFixed(1)));
       }) : h('p', { class: 'muted' }, 'No roster found for this week.'));
   }
@@ -293,45 +374,78 @@
       });
   }
 
+  /** Pinned to the bottom of the rail: what the current trade does to your season, updated on every change. */
+  function liveBar() {
+    const r = state.result;
+    let content;
+    if (state.runErrors.length) {
+      content = h('div', { class: 'errors', role: 'alert' }, state.runErrors.map((e) => h('p', {}, e)));
+    } else if (state.running) {
+      content = h('p', { class: 'live-msg' }, 'Updating…');
+    } else if (!r || !r.overrides.length) {
+      const needsPartner = state.trades.some((t) => !t.partnerId && (t.send.length || t.receive.length));
+      content = h('p', { class: 'live-msg' }, needsPartner
+        ? 'Pick a team to trade with and the season replays.'
+        : 'Tick players to trade. The season replays as you go.');
+    } else {
+      const real = r.standings.real[state.myTeamId], sim = r.standings.sim[state.myTeamId];
+      const net = Engine.round2(sim.pf - real.pf);
+      const item = (label, was, now, changed) => h('div', { class: 'live-item' },
+        h('div', { class: 'stat-label' }, label),
+        h('div', { class: 'live-val' }, changed && was !== null ? [h('span', { class: 'was' }, was), ' → '] : null, h('span', { class: changed ? 'hl' : '' }, now)));
+      content = h('div', { class: 'live-stats' },
+        item('Record', rec(real), rec(sim), rec(real) !== rec(sim)),
+        item('Seed', ordinal(real.rank), ordinal(sim.rank), real.rank !== sim.rank),
+        item('Points for', null, net === 0 ? 'No change' : signed(net, 1), net !== 0));
+    }
+    return h('div', { class: 'live', role: 'status' }, content);
+  }
+
   function builder() {
     const l = state.league;
-    const completed = Engine.completedWeeks(l);
     const used = new Set(state.trades.map((t) => t.partnerId).filter(Boolean));
 
     const resetSelections = () => {
       state.trades.forEach((t) => { t.send = []; t.receive = []; });
-      state.result = null;
-      render();
+      state.expanded = new Set();
+      run();
     };
 
     return h('aside', { class: 'builder' },
       h('h2', {}, 'Build a trade'),
       h('label', { class: 'field' }, h('span', {}, 'Your team'),
-        h('select', { onchange: (e) => { state.myTeamId = Number(e.target.value); state.trades = [{ partnerId: null, send: [], receive: [] }]; resetSelections(); } },
-          l.teams.map((t) => h('option', { value: String(t.id), selected: t.id === state.myTeamId }, t.name)))),
+        h('select', {
+          'data-key': 'my-team',
+          onchange: (e) => {
+            state.myTeamId = Number(e.target.value);
+            state.detailTeamId = state.myTeamId;
+            state.trades = [{ partnerId: null, send: [], receive: [] }];
+            resetSelections();
+          },
+        }, l.teams.map((t) => h('option', { value: String(t.id), selected: t.id === state.myTeamId }, t.name)))),
       h('label', { class: 'field' }, h('span', {}, 'Trade happens before week'),
-        h('select', { onchange: (e) => { state.effectiveWeek = Number(e.target.value); resetSelections(); } },
-          completed.map((w) => h('option', { value: String(w), selected: w === state.effectiveWeek }, `Week ${w}`)))),
+        h('select', { 'data-key': 'week', onchange: (e) => { state.effectiveWeek = Number(e.target.value); resetSelections(); } },
+          state.completed.map((w) => h('option', { value: String(w), selected: w === state.effectiveWeek }, `Week ${w}`)))),
       state.trades.map((t, i) => h('section', { class: 'trade' },
         h('div', { class: 'trade-head' },
           h('h3', {}, state.trades.length > 1 ? `Trade ${i + 1}` : 'Trade'),
-          state.trades.length > 1 ? h('button', { class: 'link', onclick: () => { state.trades.splice(i, 1); state.result = null; render(); } }, 'Remove') : null),
+          state.trades.length > 1 ? h('button', { class: 'link', onclick: () => { state.trades.splice(i, 1); run(); } }, 'Remove') : null),
         h('label', { class: 'field' }, h('span', {}, 'Trade with'),
-          h('select', { onchange: (e) => { t.partnerId = Number(e.target.value) || null; t.receive = []; state.result = null; render(); } },
+          h('select', { 'data-key': `partner:${i}`, onchange: (e) => { t.partnerId = Number(e.target.value) || null; t.receive = []; run(); } },
             h('option', { value: '' }, 'Pick a team'),
             l.teams.filter((x) => x.id !== state.myTeamId && (!used.has(x.id) || x.id === t.partnerId))
               .map((x) => h('option', { value: String(x.id), selected: x.id === t.partnerId }, x.name)))),
-        playerPicker(state.myTeamId, t.send, 'You send'),
-        t.partnerId ? playerPicker(t.partnerId, t.receive, 'You get') : null)),
+        playerPicker(state.myTeamId, t.send, 'You send', `send:${i}`),
+        t.partnerId ? playerPicker(t.partnerId, t.receive, ['You get from ', teamLabel(t.partnerId, 'xs')], `get:${i}`) : null)),
       state.trades.length < l.teams.length - 1
         ? h('button', { class: 'btn ghost wide', onclick: () => { state.trades.push({ partnerId: null, send: [], receive: [] }); render(); } }, 'Add a trade with another team')
         : null,
       unevenNotes().length ? h('div', { class: 'note' }, unevenNotes().map((n) => h('p', {}, n))) : null,
-      state.runErrors.length ? h('div', { class: 'errors', role: 'alert' }, state.runErrors.map((e) => h('p', {}, e))) : null,
-      h('button', { class: 'btn wide', disabled: state.running, onclick: run }, state.running ? 'Replaying…' : 'Replay the season'),
+      liveBar(),
       h('div', { class: 'rail-foot' },
         h('button', { class: 'link', onclick: () => start({ refresh: true }) }, 'Reload data from ESPN'),
-        seasonPicker()));
+        seasonPicker(),
+        VERSION ? h('p', { class: 'muted small' }, `Trade Hindsight ${VERSION}`) : null));
   }
 
   // ---------------------------------------------------------------------------
@@ -343,7 +457,7 @@
       return h('main', { class: 'results empty' },
         h('div', { class: 'empty-copy' },
           h('h2', {}, 'What if you had made that trade?'),
-          h('p', {}, 'Pick a team, tick the players on each side and replay the season. Every finished week is re-scored with the real points your new players scored, and lineups are set from ESPN’s projections for that week, so there’s no picking starters with hindsight.'),
+          h('p', {}, 'Pick a team and tick the players on each side, and the season replays as you go. Every finished week is re-scored with the real points your new players scored, and lineups are set from ESPN’s projections for that week, so there’s no picking starters with hindsight.'),
           h('p', { class: 'muted' }, 'If a player in your trade was really traded later, that real trade is erased and its players stay where they were.')));
     }
     return h('main', { class: 'results' },
@@ -358,6 +472,21 @@
     const me = state.myTeamId;
     const real = r.standings.real[me], sim = r.standings.sim[me];
     const last = r.weeks[r.weeks.length - 1];
+    const who = h('div', { class: 'who' }, teamPic(me, 'lg'), h('span', { class: 'who-name' }, teamName(me)));
+    if (!r.overrides.length) {
+      return h('section', { class: 'headline', 'data-scenario': 'baseline' },
+        who,
+        h('div', { class: 'flip', 'aria-label': `Real record ${rec(real)}` },
+          h('span', { class: 'flip-sim' }, rec(real)),
+          h('span', { class: 'flip-same' }, 'Your real record, no trade yet')),
+        h('p', { class: 'lede' }, `Through week ${last}, you’re ${rec(real)} and seeded ${ordinal(real.rank)}. Tick players on both sides of a trade and everything below replays as you go.`),
+        h('div', { class: 'stats' },
+          baseStat('Points for', pts1(real.pf)),
+          baseStat('Points against', pts1(real.pa)),
+          baseStat('Seed', ordinal(real.rank)),
+          baseStat('All-play record', `${real.apW}–${real.apL}`, 'Record if you played every team every week'),
+          baseStat('Weekly high scores', String(real.highs))));
+    }
     const sentence = [];
     if (rec(sim) !== rec(real)) sentence.push(`Through week ${last}, you’d be ${rec(sim)} instead of ${rec(real)}`);
     else sentence.push(`Through week ${last}, your record stays ${rec(sim)}`);
@@ -377,7 +506,8 @@
         h('div', { class: 'stat-val' }, h('span', { class: 'was' }, realV), h('span', { class: 'arrow', 'aria-hidden': 'true' }, '→'), h('span', { class: changed ? 'now hl' : 'now' }, simV)),
         note ? h('div', { class: 'stat-note' }, note) : null);
 
-    return h('section', { class: 'headline' },
+    return h('section', { class: 'headline', 'data-scenario': 'trade' },
+      who,
       recordChanged
         ? h('div', { class: 'flip', 'aria-label': `Record ${rec(real)} becomes ${rec(sim)}` },
           h('span', { class: 'flip-real' }, rec(real)),
@@ -395,6 +525,13 @@
         stat('Weekly high scores', String(real.highs), String(sim.highs), sim.highs !== real.highs)));
   }
 
+  function baseStat(label, value, note) {
+    return h('div', { class: 'stat' },
+      h('div', { class: 'stat-label' }, label),
+      h('div', { class: 'stat-val' }, h('span', { class: 'now' }, value)),
+      note ? h('div', { class: 'stat-note' }, note) : null);
+  }
+
   function standingsTable(r) {
     const { real, sim } = r.standings;
     const partners = new Set(state.trades.map((t) => t.partnerId));
@@ -402,7 +539,7 @@
     const cell = (a, b, changed) => h('td', { class: 'num' },
       changed ? h('span', {}, h('span', { class: 'was' }, a), ' ', h('span', { class: 'hl' }, b)) : b);
     return h('section', { class: 'block' },
-      h('h2', {}, 'League standings after the replay'),
+      h('h2', {}, r.overrides.length ? 'League standings after the replay' : 'League standings'),
       h('div', { class: 'table-wrap' },
         h('table', { class: 'grid' },
           h('thead', {}, h('tr', {},
@@ -415,7 +552,7 @@
             const tag = id === state.myTeamId ? 'You' : partners.has(id) ? 'Trade partner' : r.touchedTeams.includes(id) ? 'Affected' : null;
             return h('tr', { class: id === state.myTeamId ? 'mine' : '' },
               h('td', { class: 'num' }, String(b.rank), move ? h('span', { class: move > 0 ? 'up' : 'down', title: `Was ${ordinal(a.rank)}` }, move > 0 ? ` ▲${move}` : ` ▼${-move}`) : null),
-              h('td', {}, teamName(id), tag ? h('span', { class: 'tag' }, tag) : null),
+              h('td', {}, h('span', { class: 'team-cell' }, teamLabel(id), tag ? h('span', { class: 'tag' }, tag) : null)),
               cell(rec(a), rec(b), rec(a) !== rec(b)),
               cell(pts1(a.pf), pts1(b.pf), Math.abs(a.pf - b.pf) > 0.004),
               cell(pts1(a.pa), pts1(b.pa), Math.abs(a.pa - b.pa) > 0.004),
@@ -448,20 +585,20 @@
       const before = sps.every((sp) => sp < r.effectiveWeek);
       rows.push(h('tr', { class: `${changed ? 'clickable' : ''} ${before ? 'before' : ''}`, onclick: changed ? () => { isOpen ? state.expanded.delete(key) : state.expanded.add(key); render(); } : null },
         h('td', { class: 'num' }, `Week ${m.mp}`),
-        h('td', {}, opp === null || opp === undefined ? 'Bye' : teamName(opp), oppWeeks.some((w) => w.lineupChanged) ? h('span', { class: 'tag' }, 'Also changed') : null),
+        h('td', {}, opp === null || opp === undefined ? 'Bye' : h('span', { class: 'team-cell' }, teamLabel(opp, 'sm'), oppWeeks.some((w) => w.lineupChanged) ? h('span', { class: 'tag' }, 'Also changed') : null)),
         h('td', { class: 'num' }, pts(mine(m.real))),
         h('td', { class: 'num' }, Math.abs(mine(m.sim) - mine(m.real)) > 0.004 ? h('span', { class: 'hl' }, pts(mine(m.sim))) : pts(mine(m.sim))),
         h('td', { class: 'num' }, opp === null ? '–' : Math.abs(theirs(m.sim) - theirs(m.real)) > 0.004 ? h('span', {}, h('span', { class: 'was' }, pts(theirs(m.real))), ' ', h('span', { class: 'hl' }, pts(theirs(m.sim)))) : pts(theirs(m.real))),
         h('td', { class: 'num' }, resultChanged ? h('span', {}, h('span', { class: 'was' }, res(m.real)), ' ', h('span', { class: 'hl' }, res(m.sim))) : res(m.sim)),
         h('td', { class: 'num' }, changed ? h('button', { class: 'link', 'aria-expanded': String(isOpen) }, isOpen ? 'Hide' : 'Lineup') : before ? 'Before trade' : 'No change')));
-      if (isOpen) rows.push(h('tr', { class: 'detail' }, h('td', { colspan: '7' }, weeks.map(lineupChanges))));
+      if (isOpen && changed) rows.push(h('tr', { class: 'detail' }, h('td', { colspan: '7' }, weeks.map(lineupChanges))));
     }
 
     return h('section', { class: 'block' },
       h('h2', {}, 'Week by week'),
       h('div', { class: 'tabs', role: 'tablist' }, tabs.map((id) =>
-        h('button', { role: 'tab', 'aria-selected': String(id === tid), class: id === tid ? 'tab on' : 'tab', onclick: () => { state.detailTeamId = id; render(); } },
-          id === state.myTeamId ? `${teamName(id)} (you)` : teamName(id)))),
+        h('button', { role: 'tab', 'data-key': `tab:${id}`, 'aria-selected': String(id === tid), class: id === tid ? 'tab on' : 'tab', onclick: () => { state.detailTeamId = id; render(); } },
+          teamPic(id, 'xs'), id === state.myTeamId ? `${teamName(id)} (you)` : teamName(id)))),
       h('div', { class: 'table-wrap' },
         h('table', { class: 'grid weeks' },
           h('thead', {}, h('tr', {},
@@ -474,7 +611,7 @@
   function lineupChanges(w) {
     const row = (d, dir) => h('tr', {},
       h('td', { class: dir === 'in' ? 'in' : 'out' }, dir === 'in' ? 'In' : 'Out'),
-      h('td', {}, d.name), h('td', {}, d.slot),
+      h('td', {}, h('span', { class: 'team' }, playerPic(d.playerId, 'sm'), h('span', {}, d.name))), h('td', {}, d.slot),
       h('td', { class: 'num' }, pts1(d.proj)), h('td', { class: 'num' }, pts(d.pts)), h('td', {}, d.reason));
     return h('div', { class: 'changes' },
       h('p', { class: 'changes-title' }, `Week ${w.sp}: ${signed(w.delta)} points (${pts(w.realScore)} became ${pts(w.simScore)})`),
@@ -512,6 +649,7 @@
     if (c.scoreMismatches.length) items.push(`${c.scoreMismatches.length} team-week(s) where the starters' points don't add up to ESPN's score (often commissioner adjustments). The replay keeps ESPN's score and only adds or removes the changed players.`);
     if (c.fallbackWeeks) items.push(`${c.fallbackWeeks} team-week(s) had players with no ESPN projection; their earlier average was used instead.`);
     if (l.hasDivisions) items.push('Your league has divisions. Seeds here ignore division winners.');
+    if (l.tieRule && l.tieRule !== 'NONE') items.push(`Your league breaks tied matchups (ESPN setting: ${l.tieRule}). The replay counts an exact tie as a tie.`);
     if (l.tradeSource === 'activity') items.push(`Real trades come from the league activity feed (${l.realTrades.length} found in finished weeks).`);
     for (const w of l.warnings) items.push(w);
     return h('section', { class: 'block notes' },
@@ -541,7 +679,7 @@
     .readonly { font-size: 12px; color: #d8dee7; border: 1px solid #4a5667; border-radius: 999px; padding: 3px 10px; white-space: nowrap; }
     .icon-btn { background: none; border: 0; color: #fff; font-size: 26px; line-height: 1; cursor: pointer; padding: 0 4px; }
     .layout { display: grid; grid-template-columns: 340px minmax(0, 1fr); flex: 1; min-height: 0; }
-    .builder { background: var(--card); border-right: 1px solid var(--line); padding: 18px; overflow: auto; }
+    .builder { background: var(--card); border-right: 1px solid var(--line); padding: 18px 18px 0; overflow: auto; scroll-padding-bottom: 80px; /* keeps focused rows clear of the pinned .live bar */ }
     .results { padding: 22px 26px 40px; overflow: auto; min-width: 0; }
     h2 { font-size: 17px; margin: 0 0 12px; }
     h3 { font-size: 15px; margin: 0; }
@@ -554,23 +692,42 @@
     .trade-head { display: flex; justify-content: space-between; align-items: baseline; margin-bottom: 10px; }
     .picker { border: 0; padding: 0; margin: 0 0 12px; }
     .picker legend { font-weight: 600; font-size: 13px; margin-bottom: 4px; padding: 0; }
-    .pick { display: grid; grid-template-columns: 18px 1fr auto 36px; align-items: center; gap: 8px; padding: 4px 6px; border-radius: 5px; cursor: pointer; }
+    .pick { display: grid; grid-template-columns: 18px 28px minmax(0, 1fr) 36px; align-items: center; gap: 8px; padding: 4px 6px; border-radius: 5px; cursor: pointer; }
+    .pick .avatar { width: 28px; height: 28px; }
+    .pinfo { display: grid; min-width: 0; line-height: 1.25; }
+    .avatar, .logo { flex: none; display: inline-grid; place-items: center; overflow: hidden; background: #e9edf2; color: var(--ink-2); font-weight: 700; line-height: 1; letter-spacing: .02em; }
+    .avatar { width: 26px; height: 26px; border-radius: 50%; object-fit: cover; font-size: 10px; }
+    .avatar.sm { width: 22px; height: 22px; font-size: 9px; }
+    .avatar.dst { object-fit: contain; background: #fff; border: 1px solid var(--line); padding: 2px; }
+    .logo { width: 26px; height: 26px; border-radius: 6px; object-fit: cover; font-size: 9px; }
+    .logo.xs { width: 18px; height: 18px; border-radius: 4px; font-size: 6.5px; }
+    .logo.sm { width: 22px; height: 22px; border-radius: 5px; font-size: 7.5px; }
+    .logo.lg { width: 40px; height: 40px; border-radius: 9px; font-size: 13px; }
+    .team { display: inline-flex; align-items: center; gap: 8px; min-width: 0; vertical-align: middle; }
+    .team-cell { display: inline-flex; align-items: center; }
+    .who { display: flex; align-items: center; gap: 10px; margin-bottom: 12px; }
+    .who-name { font-size: 16px; font-weight: 600; }
     .pick:hover { background: var(--paper); }
     .pick.on { background: #fff6c7; }
     .pname { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-    .pmeta { color: var(--muted); font-size: 12px; }
+    .pmeta { color: var(--muted); font-size: 11.5px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
     .pavg { color: var(--ink-2); font-size: 12px; text-align: right; font-variant-numeric: tabular-nums; }
     .btn { font: inherit; font-weight: 600; background: var(--ink); color: #fff; border: 0; border-radius: 6px; padding: 10px 14px; cursor: pointer; }
     .btn[disabled] { opacity: .6; cursor: progress; }
     .btn.ghost { background: transparent; color: var(--ink); border: 1px solid #c5ccd6; }
     .btn.wide { width: 100%; margin-top: 8px; }
     .link { font: inherit; background: none; border: 0; padding: 0; color: var(--focus); cursor: pointer; text-decoration: underline; text-underline-offset: 2px; }
-    button:focus-visible, select:focus-visible, input:focus-visible, .pick:focus-within { outline: 2px solid var(--focus); outline-offset: 2px; }
+    button:focus-visible, select:focus-visible, input:focus-visible, .pick:has(input:focus-visible) { outline: 2px solid var(--focus); outline-offset: 2px; }
     .errors { background: #fdecea; border: 1px solid #f3b9b3; color: #7a1d16; border-radius: 6px; padding: 8px 10px; margin-top: 10px; }
     .errors p { margin: 0 0 4px; }
     .note { background: #fff8d6; border: 1px solid #f0dd8a; color: #4a3d00; border-radius: 6px; padding: 8px 10px; margin-top: 10px; font-size: 13px; }
     .note p { margin: 0 0 4px; }
-    .rail-foot { margin-top: 18px; padding-top: 12px; border-top: 1px solid var(--line); display: grid; gap: 10px; font-size: 13px; }
+    .live { position: sticky; bottom: 0; z-index: 1; margin: 14px -18px 0; padding: 10px 18px 12px; background: var(--card); border-top: 2px solid var(--ink); box-shadow: 0 -6px 14px rgba(23, 32, 44, .07); }
+    .live .errors { margin-top: 0; }
+    .live-msg { margin: 0; color: var(--ink-2); font-size: 13px; }
+    .live-stats { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 8px; }
+    .live-val { font-size: 15px; font-weight: 600; font-variant-numeric: tabular-nums; white-space: nowrap; }
+    .rail-foot { margin-top: 18px; padding: 12px 0 18px; border-top: 1px solid var(--line); display: grid; gap: 10px; font-size: 13px; }
     .season-row { display: flex; gap: 8px; align-items: center; }
     .season-row label { display: flex; gap: 6px; align-items: center; }
     .season-row input { width: 90px; }
@@ -613,7 +770,7 @@
     .up { color: var(--up); font-size: 12px; }
     .down { color: var(--down); font-size: 12px; }
     .tabs { display: flex; gap: 4px; flex-wrap: wrap; margin-bottom: 8px; }
-    .tab { font: inherit; font-size: 13px; border: 1px solid var(--line); background: var(--card); color: var(--ink-2); border-radius: 999px; padding: 5px 12px; cursor: pointer; }
+    .tab { font: inherit; font-size: 13px; border: 1px solid var(--line); background: var(--card); color: var(--ink-2); border-radius: 999px; padding: 4px 12px 4px 5px; cursor: pointer; display: inline-flex; align-items: center; gap: 6px; }
     .tab.on { background: var(--ink); color: #fff; border-color: var(--ink); }
     .changes { padding: 6px 4px 10px; }
     .changes-title { font-weight: 600; margin-bottom: 6px; }
@@ -629,7 +786,7 @@
     @media (max-width: 900px) {
       .scrim { padding: 0; }
       .panel { border-radius: 0; }
-      .layout { grid-template-columns: minmax(0, 1fr); overflow: auto; }
+      .layout { grid-template-columns: minmax(0, 1fr); overflow: auto; scroll-padding-bottom: 80px; }
       .league { display: none; }
       .builder { border-right: 0; border-bottom: 1px solid var(--line); overflow: visible; }
       .results { overflow: visible; padding: 18px 16px 32px; }

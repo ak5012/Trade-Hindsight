@@ -95,6 +95,22 @@ test('parseLeague normalizes settings, teams and schedule', () => {
   assert.equal(l.teams[0].espn.wins, 2);
 });
 
+test('pictures: team logos from ESPN, player headshots, NFL logos for D/ST', () => {
+  const raw = rawLeague();
+  raw.teams[0].logo = 'https://g.espncdn.com/lm-static/logo-packs/core/Longhorns.svg';
+  raw.teams[1].logo = 'http://insecure.example.com/logo.png';
+  const league = S.parseLeague(raw, 1, 2026);
+  assert.equal(league.teams[0].logo, 'https://g.espncdn.com/lm-static/logo-packs/core/Longhorns.svg');
+  assert.equal(league.teams[1].logo, null);
+
+  assert.equal(S.headshotUrl(3139477, { pos: 'QB' }), 'https://a.espncdn.com/combiner/i?img=/i/headshots/nfl/players/full/3139477.png&w=96&h=70&cb=1');
+  const kc = 'https://a.espncdn.com/combiner/i?img=/i/teamlogos/nfl/500/kc.png&w=64&h=64';
+  assert.equal(S.headshotUrl(-16012, { pos: 'D/ST', proTeamId: 12 }), kc);
+  assert.equal(S.headshotUrl(-16012, {}), kc, 'D/ST team comes from the id when proTeamId is missing');
+  assert.equal(S.proTeamAbbrev(28), 'WSH');
+  assert.equal(S.nflLogoUrl(0), null, 'free agents have no NFL logo');
+});
+
 test('weeksToLoad returns only finished regular-season weeks', () => {
   assert.deepEqual(S.weeksToLoad(S.parseLeague(rawLeague(), 1, 2026)).map((x) => x.sp), [1, 2]);
 });

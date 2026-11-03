@@ -2,7 +2,7 @@
   "manifest_version": 3,
   "name": "Trade Hindsight",
   "short_name": "Trade Hindsight",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "Replay your ESPN fantasy football season as if a trade had happened. Read-only: it never changes your league. Not affiliated with ESPN.",
   "icons": {
     "16": "icons/icon16.png",

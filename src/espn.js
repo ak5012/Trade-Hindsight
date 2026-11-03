@@ -24,6 +24,16 @@
   // ESPN defaultPositionId -> label
   const POSITION = { 1: 'QB', 2: 'RB', 3: 'WR', 4: 'TE', 5: 'K', 7: 'P', 9: 'DT', 10: 'DE', 11: 'LB', 12: 'CB', 13: 'S', 14: 'HC', 16: 'D/ST' };
 
+  // ESPN proTeamId -> NFL team abbreviation (as ESPN's logo paths spell it)
+  const PRO_TEAM = {
+    1: 'ATL', 2: 'BUF', 3: 'CHI', 4: 'CIN', 5: 'CLE', 6: 'DAL', 7: 'DEN', 8: 'DET', 9: 'GB', 10: 'TEN', 11: 'IND',
+    12: 'KC', 13: 'LV', 14: 'LAR', 15: 'MIA', 16: 'MIN', 17: 'NE', 18: 'NO', 19: 'NYG', 20: 'NYJ', 21: 'PHI', 22: 'ARI',
+    23: 'PIT', 24: 'LAC', 25: 'SF', 26: 'SEA', 27: 'TB', 28: 'WSH', 29: 'CAR', 30: 'JAX', 33: 'BAL', 34: 'HOU',
+  };
+
+  // Pictures are shown as <img> only (never fetched by code), from ESPN's image server.
+  const IMAGE_BASE = 'https://a.espncdn.com/combiner/i?img=';
+
   class EspnError extends Error {
     constructor(message, status) { super(message); this.status = status; }
   }
@@ -133,6 +143,7 @@
         id: t.id,
         name: t.name || [t.location, t.nickname].filter(Boolean).join(' ') || `Team ${t.id}`,
         abbrev: t.abbrev || '',
+        logo: safeImageUrl(t.logo),
         ownerIds: t.owners || [],
         divisionId: t.divisionId,
         espn: {
@@ -255,6 +266,7 @@
       const cur = league.players[p.id] || { name: p.name, pos: p.pos, eligible: p.eligible, proTeamId: p.proTeamId, weekly: {} };
       cur.name = p.name || cur.name;
       cur.pos = p.pos || cur.pos;
+      if (p.proTeamId) cur.proTeamId = p.proTeamId;
       if (p.eligible && p.eligible.length) cur.eligible = p.eligible;
       cur.weekly[week.sp] = { pts: p.pts, proj: p.proj };
       league.players[p.id] = cur;
@@ -359,6 +371,40 @@
       };
     }
     return out;
+  }
+
+  // ---------------------------------------------------------------------------
+  // Pictures: player headshots, NFL logos, fantasy team logos
+  // ---------------------------------------------------------------------------
+
+  /** Team logos are set by each manager and can live on any site: https only. */
+  function safeImageUrl(url) {
+    if (typeof url !== 'string' || !url) return null;
+    try {
+      const u = new URL(url);
+      return u.protocol === 'https:' ? u.toString() : null;
+    } catch (e) {
+      return null;
+    }
+  }
+
+  function proTeamAbbrev(proTeamId) {
+    return PRO_TEAM[proTeamId] || null;
+  }
+
+  function nflLogoUrl(proTeamId) {
+    const abbr = proTeamAbbrev(proTeamId);
+    return abbr ? `${IMAGE_BASE}/i/teamlogos/nfl/500/${abbr.toLowerCase()}.png&w=64&h=64` : null;
+  }
+
+  /** Headshot for a player; a D/ST gets its NFL team's logo. ESPN D/ST ids are -16000 - proTeamId. */
+  function headshotUrl(playerId, player) {
+    const id = Number(playerId);
+    if (!Number.isFinite(id)) return null;
+    if (id < 0 || (player && player.pos === 'D/ST')) {
+      return nflLogoUrl((player && player.proTeamId) || (id < 0 ? -16000 - id : null));
+    }
+    return `${IMAGE_BASE}/i/headshots/nfl/players/full/${id}.png&w=96&h=70&cb=1`;
   }
 
   function readSwid(cookieString) {
@@ -521,6 +567,7 @@
     assertReadOnlyUrl, espnGet, leagueUrl,
     weekStat, parsePlayer, parseLeague, parseWeek, parseRosterWeek, fillWeekScores, mergeWeek,
     parseTradeFeed, assignTradeWeeks, inferTradesFromRosters, parsePlayerCards,
+    PRO_TEAM, safeImageUrl, proTeamAbbrev, nflLogoUrl, headshotUrl,
     readSwid, findMyTeam, pageContext, weeksToLoad,
     loadLeague, loadWeeks, loadRealTrades, fetchPlayerCards,
   };

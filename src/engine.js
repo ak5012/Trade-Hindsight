@@ -99,8 +99,8 @@
     const ownerOf = buildOwnerIndex(league);
     const overrides = new Map();
 
+    // No trades is allowed: the replay is then reality, which the panel shows before a trade is built.
     if (!league.weeks[E]) errors.push(`No roster data for week ${E}.`);
-    if (!scenario.trades || !scenario.trades.length) errors.push('Add at least one trade.');
 
     const partnersSeen = new Set();
     (scenario.trades || []).forEach((t, i) => {

@@ -24,7 +24,7 @@
     const style = document.createElement('style');
     style.textContent = `
       button {
-        position: fixed; right: 20px; bottom: 20px; z-index: 2147483645;
+        position: fixed; left: 20px; bottom: 20px; z-index: 2147483645; /* left: ESPN's Fantasy Chat bar sits bottom right */
         font: 600 14px/1 "Segoe UI", system-ui, -apple-system, Arial, sans-serif;
         background: #17202c; color: #fff; border: 0; border-radius: 999px;
         padding: 12px 18px; cursor: pointer; box-shadow: 0 6px 20px rgba(0,0,0,.25);

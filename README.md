@@ -4,6 +4,8 @@ A Chrome extension that replays your ESPN fantasy football season as if a trade 
 
 **It's read-only.** It only sends GET requests to ESPN's read API (`lm-api-reads.fantasy.espn.com`). It never proposes or accepts trades, changes lineups or touches rosters. `tests/readonly.test.js` fails if that ever changes.
 
+Player headshots and NFL logos are shown as plain images from ESPN's image server (`a.espncdn.com`). Fantasy team logos load from wherever each manager's logo is hosted, as they do on ESPN's own pages; only `https` logos are shown, and no image request carries a referrer.
+
 Not affiliated with ESPN.
 
 ## Install (about 1 minute)
@@ -12,13 +14,14 @@ Not affiliated with ESPN.
 2. In Chrome, go to `chrome://extensions` and turn on **Developer mode** (top right).
 3. Click **Load unpacked** and select the `trade-hindsight` folder (the one that contains `manifest.json`).
 4. Open any page of your league on fantasy.espn.com (the address has `leagueId=` in it), making sure you're logged in.
-5. Click the **Trade Hindsight** button at the bottom right of the page, or the extension's toolbar icon.
+5. Click the **Trade Hindsight** button at the bottom left of the page, or the extension's toolbar icon.
 
 ## Using it
 
 1. Check **Your team** (it's detected from your ESPN login when possible) and pick the week the trade happens before.
 2. Pick the team to **Trade with**, then tick the players you send and the players you get. Uneven trades are fine. You can add trades with other teams too.
-3. Click **Replay the season**.
+
+There's no button to press: the season replays every time you tick or untick a player, change a partner or change the week. Players show their headshot, position and NFL team; fantasy teams show their league logo, or their initials if they have none. Before you build a trade, the panel shows how the season really went. The bar at the bottom of the trade builder keeps your record, seed and points change in view while you scroll through rosters.
 
 The results show your record, points, seed and playoff status (real vs replay), the full league standings, and a week-by-week table. Click a changed week to see who came in, who went out and why.
 
@@ -36,6 +39,7 @@ The results show your record, points, seed and playoff status (real vs replay), 
 - **Not yet run against a live ESPN league.** The ESPN parsing is built from the field names the open-source [espn-api](https://github.com/cwendt94/espn-api) library uses and tested against fake responses of the same shape. The first real run is the real test. The **Data checks** section at the bottom of the results tells you if the replay with no changes doesn't match ESPN's records.
 - Head-to-head points leagues only (no category leagues), 2019 season or later, regular season only.
 - Seeds ignore division winners and ESPN's head-to-head tiebreakers.
+- An exact tie in a replayed matchup counts as a tie, even if the league breaks ties (by bench points, say). The Data checks section says when your league has a tiebreak setting.
 - Roster size limits aren't enforced for uneven trades.
 - ESPN's API is unofficial and can change without notice. All ESPN code lives in `src/espn.js`.
 
@@ -54,6 +58,6 @@ The results show your record, points, seed and playoff status (real vs replay), 
 ## Development
 
 ```
-npm test          # 35 unit tests: engine, ESPN parsing, read-only guard (Node 18+)
+npm test          # 38 unit tests: engine, ESPN parsing, read-only guard (Node 18+)
 npm run smoke     # needs Playwright: loads the extension in Chromium against a fake league
 ```

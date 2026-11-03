@@ -11,6 +11,9 @@ const ELIG = { 1: [0, 7, 20, 21], 2: [2, 3, 23, 7, 20, 21], 3: [4, 3, 5, 23, 7, 
 const BASE = { 1: 18, 2: 11, 3: 11, 4: 8, 16: 7, 5: 8 };
 const SLOTS = { 0: 1, 2: 2, 4: 2, 6: 1, 23: 1, 16: 1, 17: 1, 20: 6, 21: 1 };
 const COMPLETED = 8, SEASON_WEEKS = 14;
+const PRO_IDS = [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 33, 34];
+// Team logos: most on ESPN's logo host, one team with none, one with an http logo (must be ignored)
+const logoFor = (i) => (i === 8 ? undefined : i === 9 ? 'http://insecure.example.com/logo.png' : `https://g.espncdn.com/lm-static/logo-packs/test/team-${i + 1}.svg`);
 
 function rng(seed) {
   let s = seed >>> 0;
@@ -32,6 +35,7 @@ function build() {
         id, pos,
         name: pos === 16 ? `${TEAMS[(t + 3) % 10].split(' ')[0]} D/ST` : `${FIRST[Math.floor(rand() * 16)]} ${LAST[Math.floor(rand() * 16)]}`,
         base: BASE[pos] * tier,
+        pro: PRO_IDS[(id * 7) % PRO_IDS.length],
         weeks: {},
       };
       for (let w = 1; w <= SEASON_WEEKS; w++) {
@@ -113,7 +117,7 @@ function build() {
     const p = players[e.playerId];
     return {
       playerId: p.id, lineupSlotId: e.lineupSlotId,
-      playerPoolEntry: { appliedStatTotal: p.weeks[w].pts, player: { id: p.id, fullName: p.name, defaultPositionId: p.pos, eligibleSlots: ELIG[p.pos], proTeamId: 1, stats: stat(p, w) } },
+      playerPoolEntry: { appliedStatTotal: p.weeks[w].pts, player: { id: p.id, fullName: p.name, defaultPositionId: p.pos, eligibleSlots: ELIG[p.pos], proTeamId: p.pro, stats: stat(p, w) } },
     };
   }
 
@@ -142,7 +146,7 @@ function build() {
       members: [{ id: SWID, displayName: 'akshay' }],
       teams: TEAMS.map((name, i) => ({
         id: i + 1, name, abbrev: name.slice(0, 3).toUpperCase(), owners: i === 0 ? [SWID] : [`{OWNER-${i + 1}}`], divisionId: 0,
-        playoffSeed: seeds.indexOf(i + 1) + 1, record: { overall: record[i + 1] },
+        playoffSeed: seeds.indexOf(i + 1) + 1, record: { overall: record[i + 1] }, logo: logoFor(i),
       })),
       schedule: schedule.map((g) => ({ id: g.id, matchupPeriodId: g.matchupPeriodId, winner: g.winner, home: { teamId: g.home, totalPoints: g.hs }, away: { teamId: g.away, totalPoints: g.as } })),
     };
@@ -165,7 +169,7 @@ function build() {
       const p = players[id];
       const stats = [];
       for (let w = 1; w <= COMPLETED; w++) stats.push(...stat(p, w));
-      return { id, player: { id, fullName: p.name, defaultPositionId: p.pos, eligibleSlots: ELIG[p.pos], stats } };
+      return { id, player: { id, fullName: p.name, defaultPositionId: p.pos, eligibleSlots: ELIG[p.pos], proTeamId: p.pro, stats } };
     }) };
   }
 

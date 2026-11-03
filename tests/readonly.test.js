@@ -34,11 +34,25 @@ test('no other ways to send data or act on the page', () => {
   }
 });
 
-test('the only hosts referenced are ESPN read API and the ESPN fantasy site', () => {
+test('the only hosts referenced are ESPN read API and the ESPN fantasy site (plus ESPN images)', () => {
   const allowed = new Set(['lm-api-reads.fantasy.espn.com', 'fantasy.espn.com']);
   for (const f of SHIPPED) {
-    for (const m of read(f).matchAll(/https?:\/\/([a-z0-9.-]+)/gi)) assert.ok(allowed.has(m[1]), `${f} references ${m[1]}`);
+    for (const m of read(f).matchAll(/https?:\/\/([a-z0-9.-]+)/gi)) {
+      // ESPN's image server: headshots and logos, shown as <img> by espn.js URL helpers, never fetched
+      if (m[1] === 'a.espncdn.com' && f === 'src/espn.js') continue;
+      assert.ok(allowed.has(m[1]), `${f} references ${m[1]}`);
+    }
   }
+});
+
+test('pictures are plain https images that send no referrer', () => {
+  const ui = read('src/ui.js');
+  assert.match(ui, /referrerpolicy: 'no-referrer'/);
+  const S = require('../src/espn.js');
+  assert.equal(S.safeImageUrl('http://example.com/logo.png'), null);
+  assert.equal(S.safeImageUrl('javascript:alert(1)'), null);
+  assert.equal(S.safeImageUrl('data:image/png;base64,AAAA'), null);
+  assert.equal(S.safeImageUrl('https://g.espncdn.com/lm-static/logo.svg'), 'https://g.espncdn.com/lm-static/logo.svg');
 });
 
 test('manifest asks for the minimum: storage + ESPN read API', () => {
