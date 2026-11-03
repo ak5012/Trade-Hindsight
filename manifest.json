@@ -1,0 +1,32 @@
+{
+  "manifest_version": 3,
+  "name": "Trade Hindsight",
+  "short_name": "Trade Hindsight",
+  "version": "0.1.0",
+  "description": "Replay your ESPN fantasy football season as if a trade had happened. Read-only: it never changes your league. Not affiliated with ESPN.",
+  "icons": {
+    "16": "icons/icon16.png",
+    "32": "icons/icon32.png",
+    "48": "icons/icon48.png",
+    "128": "icons/icon128.png"
+  },
+  "action": {
+    "default_title": "Trade Hindsight",
+    "default_icon": {
+      "16": "icons/icon16.png",
+      "32": "icons/icon32.png"
+    }
+  },
+  "background": {
+    "service_worker": "background.js"
+  },
+  "content_scripts": [
+    {
+      "matches": ["https://fantasy.espn.com/football/*"],
+      "js": ["src/engine.js", "src/espn.js", "src/ui.js", "src/content.js"],
+      "run_at": "document_idle"
+    }
+  ],
+  "host_permissions": ["https://lm-api-reads.fantasy.espn.com/*"],
+  "permissions": ["storage"]
+}
