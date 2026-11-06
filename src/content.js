@@ -26,16 +26,16 @@
       button {
         position: fixed; left: 20px; bottom: 20px; z-index: 2147483645; /* left: ESPN's Fantasy Chat bar sits bottom right */
         font: 600 14px/1 "Segoe UI", system-ui, -apple-system, Arial, sans-serif;
+        display: inline-flex; align-items: center; gap: 9px;
         background: #17202c; color: #fff; border: 0; border-radius: 999px;
-        padding: 12px 18px; cursor: pointer; box-shadow: 0 6px 20px rgba(0,0,0,.25);
+        padding: 6px 18px 6px 6px; cursor: pointer; box-shadow: 0 6px 20px rgba(0,0,0,.25);
       }
       button:hover { background: #253144; }
       button:focus-visible { outline: 2px solid #2f6fde; outline-offset: 3px; }
-      span { display: inline-block; width: 9px; height: 9px; border-radius: 2px; background: #ffe066; margin-right: 8px; }
-    `;
+    ` + window.THLogo.CSS;
     const btn = document.createElement('button');
     btn.type = 'button';
-    btn.innerHTML = '<span aria-hidden="true"></span>Trade Hindsight';
+    btn.innerHTML = `${window.THLogo.svg({ size: 28, motion: true, round: true })}Trade Hindsight`;
     btn.addEventListener('click', () => window.THUI.open());
     root.append(style, btn);
     return host;

@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.2.1 (2026-11-04): New logo
+
+- **New logo:** a football in flight over a striped field, with yellow speed lines.
+- **It moves.** On the launcher button, the panel header and the loading screen, the field scrolls under the ball, the ball bobs and spins and the speed lines flicker. It holds still if your system is set to reduce motion.
+- New toolbar icons at every size. Chrome toolbar icons can't animate, so they show the still version.
+- The loading screen shows the moving logo instead of the old spinner.
+
 ## 0.2.0 (2026-11-03): UI update
 
 - **Live replay.** The season replays every time a player is ticked or unticked, or the partner or week changes. The "Replay the season" button is gone.

@@ -1,11 +1,12 @@
 {
   "name": "trade-hindsight",
-  "version": "0.2.0",
+  "version": "0.2.1",
   "private": true,
   "description": "Chrome extension: replay your ESPN fantasy football season as if a trade had happened. Read-only.",
   "scripts": {
-    "test": "node --test tests/engine.test.js tests/parse.test.js tests/readonly.test.js",
-    "smoke": "node tests/ui-smoke.js"
+    "test": "node --test tests/engine.test.js tests/parse.test.js tests/readonly.test.js tests/logo.test.js",
+    "smoke": "node tests/ui-smoke.js",
+    "icons": "node tools/make-icons.js"
   },
   "devDependencies": {
     "playwright": "^1.47.0"

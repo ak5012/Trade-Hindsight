@@ -7,7 +7,7 @@ const fs = require('fs');
 const path = require('path');
 
 const ROOT = path.resolve(__dirname, '..');
-const SHIPPED = ['background.js', 'src/content.js', 'src/engine.js', 'src/espn.js', 'src/ui.js'];
+const SHIPPED = ['background.js', 'src/content.js', 'src/engine.js', 'src/espn.js', 'src/logo.js', 'src/ui.js'];
 const read = (f) => fs.readFileSync(path.join(ROOT, f), 'utf8');
 
 test('only espn.js and background.js make network calls, one fetch each', () => {

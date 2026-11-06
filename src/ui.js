@@ -7,6 +7,7 @@
   'use strict';
   const Espn = window.THEspn;
   const Engine = window.THEngine;
+  const Logo = window.THLogo;
   const VERSION = (() => { try { return chrome.runtime.getManifest().version; } catch (e) { return ''; } })();
 
   const SLOT_ORDER = [0, 1, 2, 3, 4, 5, 6, 23, 7, 16, 17, 18, 8, 9, 10, 11, 12, 13, 14, 15, 19, 20, 21];
@@ -254,7 +255,7 @@
     const focusKey = active ? active.getAttribute('data-key') : null;
 
     state.root.innerHTML = '';
-    state.root.appendChild(h('style', { text: CSS }));
+    state.root.appendChild(h('style', { text: CSS + Logo.CSS }));
     if (!state.open) return;
     const panel = h('div', { class: 'panel', role: 'dialog', 'aria-modal': 'true', 'aria-label': 'Trade Hindsight' },
       header(),
@@ -271,12 +272,21 @@
     }
   }
 
+  /** The animated logo (src/logo.js). Static markup, so innerHTML is safe here. */
+  function logoMark(size) {
+    const el = h('span', { class: 'mark', 'aria-hidden': 'true' });
+    el.innerHTML = Logo.svg({ size, motion: true });
+    return el;
+  }
+
   function header() {
     const l = state.league;
     return h('header', { class: 'bar' },
       h('div', { class: 'brand' },
-        h('span', { class: 'wordmark' }, 'Trade Hindsight'),
-        l ? h('span', { class: 'league' }, `${l.name}, ${l.season} season`) : null),
+        logoMark(28),
+        h('div', { class: 'brand-text' },
+          h('span', { class: 'wordmark' }, 'Trade Hindsight'),
+          l ? h('span', { class: 'league' }, `${l.name}, ${l.season} season`) : null)),
       h('div', { class: 'bar-right' },
         h('span', { class: 'readonly', title: 'Trade Hindsight only reads league data. Nothing here is sent to ESPN.' }, 'Read-only: your real league is never changed'),
         h('button', { class: 'icon-btn', 'aria-label': 'Close', onclick: close }, '×')));
@@ -289,7 +299,7 @@
         h('p', {}, 'Go to any page of your ESPN fantasy football league (its address contains leagueId=), then open Trade Hindsight again.'));
     }
     if (state.phase === 'loading') {
-      return h('div', { class: 'message' }, h('div', { class: 'spinner', 'aria-hidden': 'true' }), h('p', { class: 'progress', role: 'status' }, state.progress));
+      return h('div', { class: 'message' }, logoMark(72), h('p', { class: 'progress', role: 'status' }, state.progress));
     }
     if (state.phase === 'error') {
       return h('div', { class: 'message' },
@@ -672,7 +682,9 @@
     }
     .panel { background: var(--paper); width: min(1240px, 100%); border-radius: 10px; overflow: hidden; display: flex; flex-direction: column; box-shadow: 0 20px 60px rgba(0,0,0,.35); }
     .bar { background: var(--ink); color: #fff; display: flex; align-items: center; justify-content: space-between; padding: 10px 18px; gap: 16px; }
-    .brand { display: flex; align-items: baseline; gap: 14px; min-width: 0; }
+    .brand { display: flex; align-items: center; gap: 10px; min-width: 0; }
+    .brand-text { display: flex; align-items: baseline; gap: 14px; min-width: 0; }
+    .mark { display: inline-flex; flex: none; }
     .wordmark { font-family: "Bahnschrift", "DIN Condensed", "Barlow Condensed", "Roboto Condensed", "Arial Narrow", sans-serif; font-stretch: condensed; font-weight: 700; font-size: 22px; letter-spacing: .01em; white-space: nowrap; }
     .league { color: #b9c3d0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
     .bar-right { display: flex; align-items: center; gap: 12px; }
@@ -732,9 +744,6 @@
     .season-row label { display: flex; gap: 6px; align-items: center; }
     .season-row input { width: 90px; }
     .message { padding: 60px 30px; max-width: 560px; margin: 0 auto; text-align: center; display: grid; gap: 12px; justify-items: center; }
-    .spinner { width: 28px; height: 28px; border: 3px solid var(--line); border-top-color: var(--ink); border-radius: 50%; animation: spin .8s linear infinite; }
-    @keyframes spin { to { transform: rotate(360deg); } }
-    @media (prefers-reduced-motion: reduce) { .spinner { animation: none; } }
     .progress { font-variant-numeric: tabular-nums; }
     .empty { display: flex; align-items: center; }
     .empty-copy { max-width: 520px; }

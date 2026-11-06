@@ -133,6 +133,14 @@ const CORS = {
     };
   });
 
+  // the animated logo is in the launcher and the panel header, and it is moving
+  const logo = await page.evaluate(() => {
+    const moving = (svg) => !!svg && getComputedStyle(svg.querySelector('.th-field')).animationName !== 'none';
+    const launcher = document.getElementById('trade-hindsight-launcher').shadowRoot.querySelector('button svg.th-logo');
+    const header = document.getElementById('trade-hindsight-root').shadowRoot.querySelector('.bar .mark svg.th-logo');
+    return { launcher: moving(launcher), header: moving(header) };
+  });
+
   const methods = [...new Set(apiCalls.map((c) => c.method))];
   const summary = {
     trade: `${send.name} for ${get.name}`,
@@ -145,6 +153,7 @@ const CORS = {
     scroll,
     scrollKept: scroll.before > 0 && scroll.checked && scroll.unchecked && scroll.afterCheck === scroll.before && scroll.afterUncheck === scroll.before,
     pictures,
+    logo,
     imageRequests: imageCalls.length,
     imageNonGet: imageCalls.filter((c) => c.method !== 'GET'),
     insecureRequests: imageCalls.filter((c) => c.url.startsWith('http:')),
@@ -153,6 +162,6 @@ const CORS = {
   console.log(JSON.stringify(summary, null, 2));
   await ctx.close();
   const picturesOk = pictures.shown > 0 && pictures.broken === 0 && pictures.badges > 0 && pictures.noReferrer;
-  if (summary.nonGet.length || summary.errors.length || !summary.scrollKept || !picturesOk
+  if (summary.nonGet.length || summary.errors.length || !summary.scrollKept || !picturesOk || !logo.launcher || !logo.header
     || summary.imageNonGet.length || summary.insecureRequests.length) process.exit(1);
 })().catch((e) => { console.error(e); process.exit(1); });

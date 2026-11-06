@@ -53,11 +53,14 @@ The results show your record, points, seed and playoff status (real vs replay), 
 | `src/engine.js` | The simulation: ownership, erased trades, lineup solver, scoring, standings |
 | `src/ui.js` | The panel (draws in its own shadow DOM) |
 | `src/content.js` | Adds the launcher button on league pages |
+| `src/logo.js` | The logo (football over a field), still or animated |
+| `tools/make-icons.js` | Draws the toolbar icons in `icons/` from the logo |
 | `tests/` | Unit tests, read-only guard, browser smoke test with a fake league |
 
 ## Development
 
 ```
-npm test          # 38 unit tests: engine, ESPN parsing, read-only guard (Node 18+)
+npm test          # 40 unit tests: engine, ESPN parsing, read-only guard, logo (Node 18+)
 npm run smoke     # needs Playwright: loads the extension in Chromium against a fake league
+npm run icons     # needs Playwright: redraws icons/icon16.png ... icon128.png from src/logo.js
 ```
