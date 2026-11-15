@@ -16,6 +16,9 @@
  *     bench players only enter to fill holes.
  *  4. Score = real score - real points of starters lost + real points of
  *     new starters. Untouched teams keep their real score exactly.
+ *  5. Undoing a real trade: from the first week its players were on their new
+ *     teams, they stay with the teams that sent them for the rest of the
+ *     season. Rules 2-4 then apply as for a hypothetical trade.
  */
 (function (root, factory) {
   const api = factory();
@@ -88,22 +91,45 @@
   // Ownership: hypothetical trades + erased real trades
   // ---------------------------------------------------------------------------
 
+  function findRealTrade(league, id) {
+    return (league.realTrades || []).find((t) => String(t.id) === String(id)) || null;
+  }
+
   /**
+   * Two kinds of scenario:
+   *  - { myTeamId, effectiveWeek, trades }  hypothetical trades that stand from effectiveWeek on;
+   *  - { myTeamId, undoTradeId }            a real trade that never happens: from the week it went
+   *                                         through, its players stay with the teams that sent them.
    * Returns { overrides: Map(playerId -> {teamId, fromWeek, kind, ...}),
-   *           erased: [realTrade + causedBy], errors: [] }
+   *           erased: [realTrade + causedBy], errors: [], effectiveWeek, undone }
    */
   function resolveOwnership(league, scenario) {
     const errors = [];
-    const E = Number(scenario.effectiveWeek);
-    const me = Number(scenario.myTeamId);
     const ownerOf = buildOwnerIndex(league);
     const overrides = new Map();
+    const undoing = scenario.undoTradeId !== undefined && scenario.undoTradeId !== null && scenario.undoTradeId !== '';
+    const undone = undoing ? findRealTrade(league, scenario.undoTradeId) : null;
+    if (undoing && !undone) {
+      return { overrides, erased: [], errors: ['That trade is no longer in this season’s trade list. Pick another one.'], ownerOf, effectiveWeek: null, undone: null };
+    }
+    // An undone trade counts from the first week its players were on their new teams (a trade
+    // during week 4 counts from week 4; one between weeks 5 and 6 counts from week 6).
+    const E = undone ? Number(undone.week) : Number(scenario.effectiveWeek);
 
     // No trades is allowed: the replay is then reality, which the panel shows before a trade is built.
     if (!league.weeks[E]) errors.push(`No roster data for week ${E}.`);
 
+    if (undone) {
+      for (const m of undone.moves) {
+        overrides.set(m.playerId, {
+          teamId: m.fromTeamId, fromTeamId: m.toTeamId, fromWeek: E, kind: 'undone', realTradeId: undone.id,
+        });
+      }
+    }
+
+    const me = Number(scenario.myTeamId);
     const partnersSeen = new Set();
-    (scenario.trades || []).forEach((t, i) => {
+    (undone ? [] : scenario.trades || []).forEach((t, i) => {
       const partner = Number(t.partnerId);
       const label = `Trade ${i + 1}`;
       if (!partner || partner === me) errors.push(`${label}: pick a trade partner.`);
@@ -132,7 +158,10 @@
     const erased = [];
     const realTrades = [...(league.realTrades || [])].sort((a, b) => a.week - b.week);
     for (const rt of realTrades) {
-      if (rt.week <= E) continue; // already part of the rosters the trade was built from
+      if (undone && String(rt.id) === String(undone.id)) continue;
+      // A hypothetical trade is built from week-E rosters, which already include that week's real
+      // trades. An undone trade only rewinds itself, so other trades from its own week are checked too.
+      if (undone ? rt.week < E : rt.week <= E) continue;
       const hit = rt.moves.find((m) => touched.has(m.playerId));
       if (!hit) continue;
       erased.push(Object.assign({}, rt, { causedBy: hit.playerId }));
@@ -147,7 +176,7 @@
       }
     }
 
-    return { overrides, erased, errors, ownerOf };
+    return { overrides, erased, errors, ownerOf, effectiveWeek: E, undone };
   }
 
   /** Player IDs on a team's simulated roster for a scoring period. */
@@ -390,7 +419,11 @@
       if (!simIds.has(e.playerId)) {
         const ov = ownership.overrides.get(e.playerId);
         if (ov && ov.kind === 'erased-trade') d.reason = 'Gone: the real trade that brought him here was erased';
-        else if (ov && ov.fromTeamId === teamId) d.reason = 'Traded away';
+        else if (ov && ov.kind === 'undone') {
+          d.reason = ov.fromTeamId === teamId
+            ? 'Gone: the trade that brought him here is undone'
+            : 'Gone: with the trade undone, he stays with his old team';
+        } else if (ov && ov.fromTeamId === teamId) d.reason = 'Traded away';
         else d.reason = 'Gone: he stays with the team that got him in your trade';
       } else {
         d.reason = 'Benched: an incoming player out-projected him';
@@ -403,7 +436,9 @@
       const d = describe(l.playerId, l.slotId);
       if (incomingIds.includes(l.playerId)) {
         const ov = ownership.overrides.get(l.playerId);
-        d.reason = ov && ov.kind === 'erased-trade' ? 'Stays: the real trade that moved him was erased' : 'Arrives in your trade';
+        d.reason = ov && ov.kind === 'erased-trade' ? 'Stays: the real trade that moved him was erased'
+          : ov && ov.kind === 'undone' ? 'Stays: the trade is undone'
+            : 'Arrives in your trade';
       } else {
         d.reason = 'Off the bench to fill a hole';
       }
@@ -513,7 +548,7 @@
     const ownership = resolveOwnership(league, scenario);
     if (ownership.errors.length) return { errors: ownership.errors };
 
-    const E = Number(scenario.effectiveWeek);
+    const E = ownership.effectiveWeek;
     const weeks = completedWeeks(league);
     const periods = regularSeasonPeriods(league).filter((mp) => isPeriodComplete(league, mp));
     const slots = slotInstances(league.lineupSlotCounts);
@@ -575,16 +610,16 @@
     }
 
     const touchedTeams = [...new Set(teamWeeks.map((tw) => tw.teamId))];
+    const named = (rt) => Object.assign({}, rt, { moves: rt.moves.map((m) => Object.assign({ name: playerName(league, m.playerId) }, m)) });
     return {
       errors: [],
+      mode: ownership.undone ? 'undo' : 'trade',
+      undone: ownership.undone ? named(ownership.undone) : null,
       effectiveWeek: E,
       weeks,
       periods,
       overrides: [...ownership.overrides].map(([playerId, ov]) => Object.assign({ playerId, name: playerName(league, playerId) }, ov)),
-      erased: ownership.erased.map((rt) => Object.assign({}, rt, {
-        causedByName: playerName(league, rt.causedBy),
-        moves: rt.moves.map((m) => Object.assign({ name: playerName(league, m.playerId) }, m)),
-      })),
+      erased: ownership.erased.map((rt) => Object.assign(named(rt), { causedByName: playerName(league, rt.causedBy) })),
       teamWeeks,
       touchedTeams,
       matchups,
@@ -596,7 +631,7 @@
   return {
     SLOT_LABEL, slotLabel, isStarterSlot, round2,
     completedWeeks, regularSeasonPeriods, isPeriodComplete,
-    buildOwnerIndex, resolveOwnership, simRosterIds, missingPlayerWeeks,
+    buildOwnerIndex, findRealTrade, resolveOwnership, simRosterIds, missingPlayerWeeks,
     projectionFor, pointsFor, slotInstances, solveLineup, rebuildTeamWeek,
     computeStandings, simulate, playerName,
   };

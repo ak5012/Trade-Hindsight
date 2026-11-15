@@ -141,19 +141,68 @@ const CORS = {
     return { launcher: moving(launcher), header: moving(header) };
   });
 
+  const tradeView = {
+    erasedText: await page.locator('.erased').innerText().catch(() => null),
+    headline: await page.locator('.lede').innerText(),
+    liveBar: await page.locator('.live').innerText(),
+  };
+
+  // Undo a real trade: the fake league's week-5 trade between teams 3 and 6.
+  const tradeTeamA = 'Barton Springs Bats', tradeTeamB = 'Zilker Zebras';
+  await page.getByRole('button', { name: 'Undo a real trade' }).click();
+  await page.locator('.headline[data-scenario="baseline"]').waitFor({ timeout: 10000 });
+  await page.locator('.rt-list').first().waitFor({ timeout: 10000 });
+  await page.screenshot({ path: path.join(OUT, '6-undo-list.png') });
+  const undo = { legends: await page.locator('.rt-list legend').allInnerTexts() };
+  // as team 1 the trade is someone else's: undo it from "Other trades in your league"
+  await page.locator('.rt', { hasText: 'Week 5' }).first().click();
+  await page.locator('.headline[data-scenario="undo"]').waitFor({ timeout: 20000 });
+  undo.otherLede = await page.locator('.lede').innerText();
+  undo.otherBanner = await page.locator('.undone').innerText();
+  await page.screenshot({ path: path.join(OUT, '7-undo-others.png') });
+  // as team 3 it is your own trade
+  await page.getByLabel('Your team').selectOption({ label: tradeTeamA });
+  await page.locator('.lede', { hasText: 'Without your week 5 trade' }).waitFor({ timeout: 20000 });
+  undo.mineLegend = await page.locator('.rt-list legend').first().innerText();
+  undo.mineLede = await page.locator('.lede').innerText();
+  undo.mineBanner = await page.locator('.undone').innerText();
+  undo.tags = await page.locator('.grid .tag').allInnerTexts();
+  // weeks 1-4 are before the trade: same scores as real life; week 5 on is replayed
+  undo.weekCells = await page.locator('.weeks tbody tr').evaluateAll((rows) => rows.map((r) => [...r.cells].map((c) => c.innerText.trim())));
+  await page.screenshot({ path: path.join(OUT, '8-undo-mine.png') });
+  const changed = page.locator('.weeks tr.clickable').first();
+  if (await changed.count()) {
+    await changed.click();
+    await page.locator('.changes').first().scrollIntoViewIfNeeded();
+    undo.detail = await page.locator('.changes').first().innerText();
+    await page.screenshot({ path: path.join(OUT, '9-undo-week.png') });
+  }
+  await page.setViewportSize({ width: 400, height: 860 });
+  await page.locator('.rt.on').scrollIntoViewIfNeeded();
+  await page.screenshot({ path: path.join(OUT, '10-undo-mobile.png') });
+  await page.setViewportSize({ width: 1440, height: 900 });
+  // back to "Add a trade": the trade builder is still there
+  await page.getByRole('button', { name: 'Add a trade' }).click();
+  await page.getByText('Build a trade').waitFor({ timeout: 5000 });
+  undo.ok = undo.legends.some((l) => l.startsWith('Other trades in your league'))
+    && undo.otherLede.includes(`trade between ${tradeTeamA} and ${tradeTeamB}`)
+    && undo.mineLegend === 'Your trades (1)'
+    && undo.mineLede.startsWith(`Without your week 5 trade with ${tradeTeamB}`)
+    && undo.tags.includes('In the trade')
+    && undo.weekCells.filter((c) => /^Week [1-4]$/.test(c[0])).every((c) => c[2] === c[3] && c[6] === 'Before trade');
+
   const methods = [...new Set(apiCalls.map((c) => c.method))];
   const summary = {
     trade: `${send.name} for ${get.name}`,
     apiCalls: apiCalls.length,
     methods,
     nonGet: apiCalls.filter((c) => c.method !== 'GET' && c.method !== 'OPTIONS'),
-    erasedText: await page.locator('.erased').innerText().catch(() => null),
-    headline: await page.locator('.lede').innerText(),
-    liveBar: await page.locator('.live').innerText(),
+    ...tradeView,
     scroll,
     scrollKept: scroll.before > 0 && scroll.checked && scroll.unchecked && scroll.afterCheck === scroll.before && scroll.afterUncheck === scroll.before,
     pictures,
     logo,
+    undo,
     imageRequests: imageCalls.length,
     imageNonGet: imageCalls.filter((c) => c.method !== 'GET'),
     insecureRequests: imageCalls.filter((c) => c.url.startsWith('http:')),
@@ -162,6 +211,6 @@ const CORS = {
   console.log(JSON.stringify(summary, null, 2));
   await ctx.close();
   const picturesOk = pictures.shown > 0 && pictures.broken === 0 && pictures.badges > 0 && pictures.noReferrer;
-  if (summary.nonGet.length || summary.errors.length || !summary.scrollKept || !picturesOk || !logo.launcher || !logo.header
+  if (summary.nonGet.length || summary.errors.length || !summary.scrollKept || !picturesOk || !logo.launcher || !logo.header || !undo.ok
     || summary.imageNonGet.length || summary.insecureRequests.length) process.exit(1);
 })().catch((e) => { console.error(e); process.exit(1); });

@@ -17,7 +17,9 @@
     ctx: null, league: null,
     phase: 'idle', progress: '', error: null,
     myTeamId: null, effectiveWeek: null, completed: [],
+    mode: 'trade', // 'trade': add a trade that never happened; 'undo': take back one that did
     trades: [],
+    undoTradeId: null, laterTrades: new Map(), resultsToTop: false,
     result: null, runErrors: [], running: false,
     runId: 0, cardLoads: new Map(),
     detailTeamId: null, expanded: new Set(),
@@ -173,6 +175,8 @@
       state.myTeamId = swidTeam || urlTeam || league.teams[0].id;
       state.effectiveWeek = state.completed[0];
       state.trades = [{ partnerId: null, send: [], receive: [] }];
+      state.undoTradeId = null;
+      state.laterTrades = new Map();
       state.detailTeamId = state.myTeamId;
       state.expanded = new Set();
       state.phase = 'ready';
@@ -212,10 +216,19 @@
 
   // Replays the season for the current trades. Called after every change, so
   // the results always match the builder; a newer call replaces an older one.
+  function currentScenario() {
+    if (state.mode === 'undo') {
+      return state.undoTradeId !== null
+        ? { myTeamId: state.myTeamId, undoTradeId: state.undoTradeId }
+        : { myTeamId: state.myTeamId, effectiveWeek: state.completed[0], trades: [] }; // nothing picked: the real season
+    }
+    return { myTeamId: state.myTeamId, effectiveWeek: state.effectiveWeek, trades: completeTrades() };
+  }
+
   async function run() {
     const id = ++state.runId;
     const league = state.league;
-    const scenario = { myTeamId: state.myTeamId, effectiveWeek: state.effectiveWeek, trades: completeTrades() };
+    const scenario = currentScenario();
     const finish = (result, errors) => {
       if (id !== state.runId) return;
       state.running = false;
@@ -266,6 +279,12 @@
       const was = scroll[i][j];
       if (was) [el.scrollTop, el.scrollLeft] = was;
     }));
+    // A new scenario (mode switch, a real trade picked) starts the results from the top.
+    if (state.resultsToTop && state.result && !state.running) {
+      state.resultsToTop = false;
+      const res = state.root.querySelector('.results');
+      if (res) res.scrollTop = 0;
+    }
     if (focusKey) {
       const el = state.root.querySelector(`[data-key="${focusKey}"]`);
       if (el) el.focus({ preventScroll: true });
@@ -394,9 +413,11 @@
       content = h('p', { class: 'live-msg' }, 'Updating…');
     } else if (!r || !r.overrides.length) {
       const needsPartner = state.trades.some((t) => !t.partnerId && (t.send.length || t.receive.length));
-      content = h('p', { class: 'live-msg' }, needsPartner
-        ? 'Pick a team to trade with and the season replays.'
-        : 'Tick players to trade. The season replays as you go.');
+      content = h('p', { class: 'live-msg' }, state.mode === 'undo'
+        ? (state.league.realTrades.length ? 'Pick a real trade and the season replays without it.' : 'No real trades to undo this season.')
+        : needsPartner
+          ? 'Pick a team to trade with and the season replays.'
+          : 'Tick players to trade. The season replays as you go.');
     } else {
       const real = r.standings.real[state.myTeamId], sim = r.standings.sim[state.myTeamId];
       const net = Engine.round2(sim.pf - real.pf);
@@ -412,6 +433,48 @@
   }
 
   function builder() {
+    return h('aside', { class: 'builder' },
+      modeSwitch(),
+      state.mode === 'undo' ? undoBuilder() : tradeBuilder(),
+      liveBar(),
+      h('div', { class: 'rail-foot' },
+        h('button', { class: 'link', onclick: () => start({ refresh: true }) }, 'Reload data from ESPN'),
+        seasonPicker(),
+        VERSION ? h('p', { class: 'muted small' }, `Trade Hindsight ${VERSION}`) : null));
+  }
+
+  /** Two replays: add a trade that never happened, or take back one that did. */
+  function modeSwitch() {
+    const opt = (mode, label) => h('button', {
+      type: 'button', class: state.mode === mode ? 'mode on' : 'mode', 'aria-pressed': String(state.mode === mode), 'data-key': `mode:${mode}`,
+      onclick: () => {
+        if (state.mode === mode) return;
+        state.mode = mode;
+        state.expanded = new Set();
+        state.resultsToTop = true;
+        run();
+      },
+    }, label);
+    return h('div', { class: 'modes', role: 'group', 'aria-label': 'What to replay' },
+      opt('trade', 'Add a trade'),
+      opt('undo', 'Undo a real trade'));
+  }
+
+  function teamSelect() {
+    return h('label', { class: 'field' }, h('span', {}, 'Your team'),
+      h('select', {
+        'data-key': 'my-team',
+        onchange: (e) => {
+          state.myTeamId = Number(e.target.value);
+          state.detailTeamId = state.myTeamId;
+          state.trades = [{ partnerId: null, send: [], receive: [] }];
+          state.expanded = new Set();
+          run();
+        },
+      }, state.league.teams.map((t) => h('option', { value: String(t.id), selected: t.id === state.myTeamId }, t.name))));
+  }
+
+  function tradeBuilder() {
     const l = state.league;
     const used = new Set(state.trades.map((t) => t.partnerId).filter(Boolean));
 
@@ -421,18 +484,9 @@
       run();
     };
 
-    return h('aside', { class: 'builder' },
+    return [
       h('h2', {}, 'Build a trade'),
-      h('label', { class: 'field' }, h('span', {}, 'Your team'),
-        h('select', {
-          'data-key': 'my-team',
-          onchange: (e) => {
-            state.myTeamId = Number(e.target.value);
-            state.detailTeamId = state.myTeamId;
-            state.trades = [{ partnerId: null, send: [], receive: [] }];
-            resetSelections();
-          },
-        }, l.teams.map((t) => h('option', { value: String(t.id), selected: t.id === state.myTeamId }, t.name)))),
+      teamSelect(),
       h('label', { class: 'field' }, h('span', {}, 'Trade happens before week'),
         h('select', { 'data-key': 'week', onchange: (e) => { state.effectiveWeek = Number(e.target.value); resetSelections(); } },
           state.completed.map((w) => h('option', { value: String(w), selected: w === state.effectiveWeek }, `Week ${w}`)))),
@@ -451,11 +505,115 @@
         ? h('button', { class: 'btn ghost wide', onclick: () => { state.trades.push({ partnerId: null, send: [], receive: [] }); render(); } }, 'Add a trade with another team')
         : null,
       unevenNotes().length ? h('div', { class: 'note' }, unevenNotes().map((n) => h('p', {}, n))) : null,
-      liveBar(),
-      h('div', { class: 'rail-foot' },
-        h('button', { class: 'link', onclick: () => start({ refresh: true }) }, 'Reload data from ESPN'),
-        seasonPicker(),
-        VERSION ? h('p', { class: 'muted small' }, `Trade Hindsight ${VERSION}`) : null));
+    ];
+  }
+
+  // ---------------------------------------------------------------------------
+  // undo a real trade (left rail)
+  // ---------------------------------------------------------------------------
+  const listJoin = (items) => (items.length < 2 ? items.join('')
+    : `${items.slice(0, -1).join(', ')} and ${items[items.length - 1]}`);
+
+  const tradeTeams = (t) => [...new Set(t.moves.flatMap((m) => [m.fromTeamId, m.toTeamId]))];
+
+  /** Teams on the other side of the current scenario: trade partners, or the teams in the undone trade. */
+  function involvedTeams(r) {
+    if (r && r.undone) return tradeTeams(r.undone).filter((id) => id !== state.myTeamId);
+    return state.trades.map((t) => t.partnerId).filter(Boolean);
+  }
+
+  /** How many later real trades fall away with this one (they moved one of its players again). */
+  function laterTradeCount(t) {
+    if (!state.laterTrades.has(t.id)) {
+      const own = Engine.resolveOwnership(state.league, { myTeamId: state.myTeamId, undoTradeId: t.id });
+      state.laterTrades.set(t.id, own.erased.length);
+    }
+    return state.laterTrades.get(t.id);
+  }
+
+  function playerChip(pid) {
+    const p = state.league.players[pid] || {};
+    const nfl = p.pos !== 'D/ST' ? Espn.proTeamAbbrev(p.proTeamId) : null;
+    return h('span', { class: 'chip' },
+      playerPic(pid, 'sm'),
+      h('span', { class: 'chip-name' }, p.name || `Player ${pid}`),
+      h('span', { class: 'chip-meta' }, [p.pos, nfl].filter(Boolean).join(' · ')));
+  }
+
+  function tradeDate(t) {
+    if (!t.date) return null;
+    const d = new Date(t.date);
+    return Number.isNaN(d.getTime()) ? null : d.toLocaleDateString(undefined, { month: 'short', day: 'numeric' });
+  }
+
+  /** Who sent what, my side first: "You gave up" / "You got" for my trades, "<team> sent" otherwise. */
+  function tradeSides(t) {
+    const me = state.myTeamId;
+    const mine = tradeTeams(t).includes(me);
+    const groups = new Map();
+    for (const m of t.moves) {
+      if (!groups.has(m.fromTeamId)) groups.set(m.fromTeamId, []);
+      groups.get(m.fromTeamId).push(m);
+    }
+    return [...groups.keys()].sort((a, b) => (a === me ? -1 : b === me ? 1 : 0)).map((from) => {
+      const moves = groups.get(from);
+      const label = from === me ? 'You gave up'
+        : mine && moves.every((m) => m.toTeamId === me) ? 'You got'
+          : `${teamName(from)} sent`;
+      return { from, label, moves };
+    });
+  }
+
+  function tradeCard(t) {
+    const me = state.myTeamId;
+    const on = state.undoTradeId !== null && String(state.undoTradeId) === String(t.id);
+    const teams = tradeTeams(t);
+    const mine = teams.includes(me);
+    const later = laterTradeCount(t);
+    const date = tradeDate(t);
+    return h('label', { class: `rt ${on ? 'on' : ''}` },
+      h('input', {
+        type: 'radio', name: 'th-undo', checked: on, 'data-key': `undo:${t.id}`,
+        onchange: () => { state.undoTradeId = t.id; state.expanded = new Set(); state.resultsToTop = true; run(); },
+      }),
+      h('span', { class: 'rt-body' },
+        h('span', { class: 'rt-head' },
+          h('span', { class: 'rt-week' }, `Week ${t.week}`),
+          date ? h('span', { class: 'muted small' }, date) : null,
+          h('span', { class: 'rt-teams' }, mine
+            ? ['with ', teams.filter((id) => id !== me).map((id) => teamLabel(id, 'xs'))]
+            : teams.map((id, i) => [i ? h('span', { class: 'muted', 'aria-hidden': 'true' }, '⇄') : null, teamLabel(id, 'xs')]))),
+        tradeSides(t).map((s) => h('span', { class: 'rt-side' },
+          h('span', { class: 'rt-side-label' }, s.label),
+          s.moves.map((m) => playerChip(m.playerId)))),
+        later ? h('span', { class: 'rt-note' }, `Also erases ${later} later trade${later > 1 ? 's' : ''} of these players.`) : null,
+        t.source === 'roster-diff' ? h('span', { class: 'rt-note' }, 'Found from week-to-week roster changes.') : null));
+  }
+
+  function undoBuilder() {
+    const l = state.league;
+    const me = state.myTeamId;
+    const all = [...l.realTrades].sort((a, b) => a.week - b.week || (a.date || 0) - (b.date || 0));
+    const mine = all.filter((t) => tradeTeams(t).includes(me));
+    const others = all.filter((t) => !tradeTeams(t).includes(me));
+    return [
+      h('h2', {}, 'Undo a real trade'),
+      h('p', { class: 'muted small' },
+        'Pick a trade that really happened. From the week it went through, its players stay with their old teams, and the rest of the season replays without it. Earlier weeks stay exactly as they were.'),
+      teamSelect(),
+      state.undoTradeId !== null
+        ? h('p', { class: 'small' }, h('button', { class: 'link', 'data-key': 'undo-clear', onclick: () => { state.undoTradeId = null; state.expanded = new Set(); run(); } }, 'Clear and show the real season'))
+        : null,
+      h('fieldset', { class: 'rt-list' },
+        h('legend', {}, mine.length ? `Your trades (${mine.length})` : 'Your trades'),
+        mine.length ? mine.map(tradeCard) : h('p', { class: 'muted small' }, `${teamName(me)} made no trades in the finished weeks of this season.`)),
+      others.length
+        ? h('fieldset', { class: 'rt-list' },
+          h('legend', {}, `Other trades in your league (${others.length})`),
+          others.map(tradeCard))
+        : null,
+      !all.length ? h('div', { class: 'note' }, h('p', {}, 'No real trades were found in the finished weeks of this season.')) : null,
+    ];
   }
 
   // ---------------------------------------------------------------------------
@@ -465,17 +623,57 @@
     const r = state.result;
     if (!r) {
       return h('main', { class: 'results empty' },
-        h('div', { class: 'empty-copy' },
-          h('h2', {}, 'What if you had made that trade?'),
-          h('p', {}, 'Pick a team and tick the players on each side, and the season replays as you go. Every finished week is re-scored with the real points your new players scored, and lineups are set from ESPN’s projections for that week, so there’s no picking starters with hindsight.'),
-          h('p', { class: 'muted' }, 'If a player in your trade was really traded later, that real trade is erased and its players stay where they were.')));
+        h('div', { class: 'empty-copy' }, state.mode === 'undo'
+          ? [
+            h('h2', {}, 'What if you hadn’t made that trade?'),
+            h('p', {}, 'Pick a trade that really happened, and the season replays without it from the week it went through. Every week from then on is re-scored with the real points of the players each team would have kept, and lineups are set from ESPN’s projections for that week, so there’s no picking starters with hindsight.'),
+            h('p', { class: 'muted' }, 'If one of its players was traded again later, that later trade is erased too.'),
+          ]
+          : [
+            h('h2', {}, 'What if you had made that trade?'),
+            h('p', {}, 'Pick a team and tick the players on each side, and the season replays as you go. Every finished week is re-scored with the real points your new players scored, and lineups are set from ESPN’s projections for that week, so there’s no picking starters with hindsight.'),
+            h('p', { class: 'muted' }, 'If a player in your trade was really traded later, that real trade is erased and its players stay where they were.'),
+          ]));
     }
     return h('main', { class: 'results' },
+      r.undone ? undoneBanner(r) : null,
       headline(r),
       standingsTable(r),
       teamDetail(r),
       erasedTrades(r),
       checks(r));
+  }
+
+  /** Names the undone trade from your side: "your week 5 trade with X", or "the week 5 trade between X and Y". */
+  function undoneName(t) {
+    const me = state.myTeamId;
+    const teams = tradeTeams(t);
+    return teams.includes(me)
+      ? `your week ${t.week} trade with ${listJoin(teams.filter((id) => id !== me).map(teamName))}`
+      : `the week ${t.week} trade between ${listJoin(teams.map(teamName))}`;
+  }
+
+  function undoneBanner(r) {
+    const t = r.undone;
+    const me = state.myTeamId;
+    const stays = tradeSides(t).map((s) => {
+      const names = s.moves.map((m) => m.name);
+      return `${listJoin(names)} ${names.length > 1 ? 'stay' : 'stays'} with ${s.from === me ? 'you' : teamName(s.from)}`;
+    });
+    const later = r.erased.length;
+    const first = state.completed[0];
+    const before = t.week <= first ? ''
+      : t.week - 1 === first ? `Week ${first} is exactly as it really happened.`
+        : `Weeks ${first}–${t.week - 1} are exactly as they really happened.`;
+    return h('section', { class: 'undone', 'aria-label': 'The trade being undone' },
+      h('div', { class: 'undone-tag' }, 'Replaying the season without'),
+      h('p', { class: 'undone-title' }, undoneName(t).replace(/^./, (c) => c.toUpperCase())),
+      h('div', { class: 'undone-sides' }, tradeSides(t).map((s) => h('div', { class: 'rt-side' },
+        h('span', { class: 'rt-side-label' }, s.label),
+        s.moves.map((m) => playerChip(m.playerId))))),
+      h('p', { class: 'muted small' },
+        `From week ${t.week} on, ${listJoin(stays)}. ${before}`,
+        later ? ` ${later} later trade${later > 1 ? 's' : ''} of these players ${later > 1 ? 'are' : 'is'} erased too (listed below).` : ''));
   }
 
   function headline(r) {
@@ -488,8 +686,10 @@
         who,
         h('div', { class: 'flip', 'aria-label': `Real record ${rec(real)}` },
           h('span', { class: 'flip-sim' }, rec(real)),
-          h('span', { class: 'flip-same' }, 'Your real record, no trade yet')),
-        h('p', { class: 'lede' }, `Through week ${last}, you’re ${rec(real)} and seeded ${ordinal(real.rank)}. Tick players on both sides of a trade and everything below replays as you go.`),
+          h('span', { class: 'flip-same' }, state.mode === 'undo' ? 'Your real record, nothing undone yet' : 'Your real record, no trade yet')),
+        h('p', { class: 'lede' }, `Through week ${last}, you’re ${rec(real)} and seeded ${ordinal(real.rank)}. ${state.mode === 'undo'
+          ? 'Pick a real trade on the left and everything below replays without it.'
+          : 'Tick players on both sides of a trade and everything below replays as you go.'}`),
         h('div', { class: 'stats' },
           baseStat('Points for', pts1(real.pf)),
           baseStat('Points against', pts1(real.pa)),
@@ -498,17 +698,27 @@
           baseStat('Weekly high scores', String(real.highs))));
     }
     const sentence = [];
-    if (rec(sim) !== rec(real)) sentence.push(`Through week ${last}, you’d be ${rec(sim)} instead of ${rec(real)}`);
+    const undo = r.mode === 'undo';
+    const inUndone = undo && tradeTeams(r.undone).includes(me);
+    const net = Engine.round2(sim.pf - real.pf);
+    if (undo) {
+      const name = undoneName(r.undone);
+      sentence.push(inUndone ? `Without ${name}, through week ${last} ` : `If ${name.replace(/^the /, 'that ')} had never happened, through week ${last} `);
+      sentence.push(rec(sim) !== rec(real) ? `you’d be ${rec(sim)} instead of ${rec(real)}` : `your record stays ${rec(sim)}`);
+    } else if (rec(sim) !== rec(real)) sentence.push(`Through week ${last}, you’d be ${rec(sim)} instead of ${rec(real)}`);
     else sentence.push(`Through week ${last}, your record stays ${rec(sim)}`);
     if (sim.rank !== real.rank) sentence.push(`, seeded ${ordinal(sim.rank)} instead of ${ordinal(real.rank)}`);
     else sentence.push(`, still seeded ${ordinal(sim.rank)}`);
     sentence.push('.');
-    const net = Engine.round2(sim.pf - real.pf);
-    if (net !== 0) sentence.push(` The trade ${net > 0 ? 'adds' : 'costs'} ${Math.abs(net).toFixed(1)} points over the weeks it was in effect.`);
+    if (undo) {
+      if (net !== 0 && inUndone) sentence.push(` Not making it ${net > 0 ? 'adds' : 'costs'} ${Math.abs(net).toFixed(1)} points from week ${r.effectiveWeek} on.`);
+      else if (net !== 0) sentence.push(` You’d score ${Math.abs(net).toFixed(1)} ${net > 0 ? 'more' : 'fewer'} points from week ${r.effectiveWeek} on.`);
+      else if (!inUndone) sentence.push(' Your own scores don’t change; any difference comes from your opponents’ scores.');
+    } else if (net !== 0) sentence.push(` The trade ${net > 0 ? 'adds' : 'costs'} ${Math.abs(net).toFixed(1)} points over the weeks it was in effect.`);
     if (sim.inPlayoffs && !real.inPlayoffs) sentence.push(' That moves you into a playoff spot.');
     if (!sim.inPlayoffs && real.inPlayoffs) sentence.push(' That drops you out of a playoff spot.');
 
-    const pfDelta = Engine.round2(sim.pf - real.pf);
+    const pfDelta = net;
     const recordChanged = rec(sim) !== rec(real);
     const stat = (label, realV, simV, changed, note) =>
       h('div', { class: 'stat' },
@@ -516,7 +726,7 @@
         h('div', { class: 'stat-val' }, h('span', { class: 'was' }, realV), h('span', { class: 'arrow', 'aria-hidden': 'true' }, '→'), h('span', { class: changed ? 'now hl' : 'now' }, simV)),
         note ? h('div', { class: 'stat-note' }, note) : null);
 
-    return h('section', { class: 'headline', 'data-scenario': 'trade' },
+    return h('section', { class: 'headline', 'data-scenario': undo ? 'undo' : 'trade' },
       who,
       recordChanged
         ? h('div', { class: 'flip', 'aria-label': `Record ${rec(real)} becomes ${rec(sim)}` },
@@ -528,7 +738,7 @@
           h('span', { class: 'flip-same' }, 'Same record as real life')),
       h('p', { class: 'lede' }, sentence.join('')),
       h('div', { class: 'stats' },
-        stat('Points for', pts1(real.pf), pts1(sim.pf), pfDelta !== 0, pfDelta !== 0 ? `${signed(pfDelta, 1)} from the trade` : 'No change'),
+        stat('Points for', pts1(real.pf), pts1(sim.pf), pfDelta !== 0, pfDelta !== 0 ? `${signed(pfDelta, 1)} ${undo ? 'without the trade' : 'from the trade'}` : 'No change'),
         stat('Points against', pts1(real.pa), pts1(sim.pa), Math.abs(sim.pa - real.pa) > 0.004),
         stat('Seed', ordinal(real.rank), ordinal(sim.rank), sim.rank !== real.rank),
         stat('All-play record', `${real.apW}–${real.apL}`, `${sim.apW}–${sim.apL}`, sim.apW !== real.apW, 'Record if you played every team every week'),
@@ -544,7 +754,7 @@
 
   function standingsTable(r) {
     const { real, sim } = r.standings;
-    const partners = new Set(state.trades.map((t) => t.partnerId));
+    const partners = new Set(involvedTeams(r));
     const order = Object.keys(sim).map(Number).sort((a, b) => sim[a].rank - sim[b].rank);
     const cell = (a, b, changed) => h('td', { class: 'num' },
       changed ? h('span', {}, h('span', { class: 'was' }, a), ' ', h('span', { class: 'hl' }, b)) : b);
@@ -559,7 +769,7 @@
           h('tbody', {}, order.map((id) => {
             const a = real[id], b = sim[id];
             const move = a.rank - b.rank;
-            const tag = id === state.myTeamId ? 'You' : partners.has(id) ? 'Trade partner' : r.touchedTeams.includes(id) ? 'Affected' : null;
+            const tag = id === state.myTeamId ? 'You' : partners.has(id) ? (r.undone ? 'In the trade' : 'Trade partner') : r.touchedTeams.includes(id) ? 'Affected' : null;
             return h('tr', { class: id === state.myTeamId ? 'mine' : '' },
               h('td', { class: 'num' }, String(b.rank), move ? h('span', { class: move > 0 ? 'up' : 'down', title: `Was ${ordinal(a.rank)}` }, move > 0 ? ` ▲${move}` : ` ▼${-move}`) : null),
               h('td', {}, h('span', { class: 'team-cell' }, teamLabel(id), tag ? h('span', { class: 'tag' }, tag) : null)),
@@ -573,7 +783,7 @@
   }
 
   function teamDetail(r) {
-    const partners = state.trades.map((t) => t.partnerId);
+    const partners = involvedTeams(r);
     const tabs = [state.myTeamId, ...partners, ...r.touchedTeams].filter((id, i, arr) => id && arr.indexOf(id) === i);
     const tid = tabs.includes(state.detailTeamId) ? state.detailTeamId : state.myTeamId;
     const games = r.matchups.filter((m) => m.homeId === tid || m.awayId === tid).sort((a, b) => a.mp - b.mp);
@@ -637,7 +847,9 @@
     if (!r.erased.length) return null;
     return h('section', { class: 'block' },
       h('h2', {}, `Real trades erased (${r.erased.length})`),
-      h('p', { class: 'muted' }, 'These trades happened in your league, but they involved a player from your hypothetical trade (or from an earlier erased trade), so the replay pretends they never happened.'),
+      h('p', { class: 'muted' }, r.undone
+        ? 'These later trades moved a player from the trade you undid (or from an earlier erased trade). Without that trade they couldn’t have happened, so the replay leaves them out too.'
+        : 'These trades happened in your league, but they involved a player from your hypothetical trade (or from an earlier erased trade), so the replay pretends they never happened.'),
       h('ul', { class: 'erased' }, r.erased.map((t) => {
         const byTeam = {};
         for (const m of t.moves) (byTeam[m.fromTeamId] = byTeam[m.fromTeamId] || []).push(m.name);
@@ -729,7 +941,33 @@
     .btn.ghost { background: transparent; color: var(--ink); border: 1px solid #c5ccd6; }
     .btn.wide { width: 100%; margin-top: 8px; }
     .link { font: inherit; background: none; border: 0; padding: 0; color: var(--focus); cursor: pointer; text-decoration: underline; text-underline-offset: 2px; }
-    button:focus-visible, select:focus-visible, input:focus-visible, .pick:has(input:focus-visible) { outline: 2px solid var(--focus); outline-offset: 2px; }
+    button:focus-visible, select:focus-visible, input:focus-visible, .pick:has(input:focus-visible), .rt:has(input:focus-visible) { outline: 2px solid var(--focus); outline-offset: 2px; }
+    .modes { display: grid; grid-template-columns: 1fr 1fr; gap: 3px; padding: 3px; margin-bottom: 16px; background: var(--paper); border: 1px solid var(--line); border-radius: 8px; }
+    .mode { font: inherit; font-size: 13px; font-weight: 600; border: 0; border-radius: 6px; padding: 7px 8px; background: transparent; color: var(--ink-2); cursor: pointer; }
+    .mode:hover { background: #e9edf2; }
+    .mode.on { background: var(--ink); color: #fff; }
+    .rt-list { border: 0; padding: 0; margin: 0 0 14px; display: grid; gap: 8px; min-width: 0; }
+    .rt-list legend { font-weight: 600; font-size: 13px; margin-bottom: 6px; padding: 0; }
+    .rt { display: grid; grid-template-columns: 18px minmax(0, 1fr); gap: 8px; align-items: start; padding: 10px; border: 1px solid var(--line); border-radius: 8px; background: var(--card); cursor: pointer; }
+    .rt:hover { border-color: #c5ccd6; }
+    .rt.on { background: #fff6c7; border-color: #e3cc5c; }
+    .rt input { margin: 3px 0 0; }
+    .rt-body { display: grid; gap: 8px; min-width: 0; }
+    .rt-head { display: flex; align-items: center; gap: 4px 8px; flex-wrap: wrap; }
+    .rt-week { font-weight: 700; }
+    .rt-teams { display: inline-flex; align-items: center; gap: 6px; flex-wrap: wrap; font-size: 13px; color: var(--ink-2); min-width: 0; }
+    .rt-teams .team { gap: 5px; }
+    .rt-side { display: grid; gap: 4px; min-width: 0; }
+    .rt-side-label { font-size: 11px; font-weight: 700; letter-spacing: .05em; text-transform: uppercase; color: var(--muted); }
+    .chip { display: grid; grid-template-columns: 22px minmax(0, 1fr) auto; align-items: center; gap: 7px; font-size: 13px; min-width: 0; }
+    .chip-name { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+    .chip-meta { color: var(--muted); font-size: 11.5px; white-space: nowrap; }
+    .rt-note { font-size: 12px; color: var(--ink-2); }
+    .undone { background: var(--card); border: 1px solid var(--line); border-left: 4px solid var(--ink); border-radius: 8px; padding: 12px 16px; margin-bottom: 24px; }
+    .undone-tag { font-size: 11px; font-weight: 700; letter-spacing: .06em; text-transform: uppercase; color: var(--muted); margin-bottom: 2px; }
+    .undone-title { font-size: 16px; font-weight: 600; margin-bottom: 10px; }
+    .undone-sides { display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 10px 24px; margin-bottom: 10px; }
+    .undone p:last-child { margin-bottom: 0; }
     .errors { background: #fdecea; border: 1px solid #f3b9b3; color: #7a1d16; border-radius: 6px; padding: 8px 10px; margin-top: 10px; }
     .errors p { margin: 0 0 4px; }
     .note { background: #fff8d6; border: 1px solid #f0dd8a; color: #4a3d00; border-radius: 6px; padding: 8px 10px; margin-top: 10px; font-size: 13px; }

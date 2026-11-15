@@ -296,3 +296,120 @@ test('completed weeks exclude a matchup period that is still undecided', () => {
   league.schedule.filter((g) => g.mp === 4).forEach((g) => { g.winner = 'UNDECIDED'; });
   assert.deepEqual(E.completedWeeks(league), [1, 2, 3]);
 });
+
+// ---------------------------------------------------------------------------
+// Undoing a real trade ("what if I hadn't made it")
+// ---------------------------------------------------------------------------
+
+// Real week-3 trade: team 1 sends bench RB 107 to team 2 for WR 204. Team 1 starts 204 at WR
+// (105 goes to the bench); team 2 moves bench WR 208 into the WR hole.
+const REAL_TRADE = {
+  rosterChanges: [
+    { week: 3, playerId: 107, toTeam: 2, slot: 'BE' },
+    { week: 3, playerId: 204, toTeam: 1, slot: 'WR' },
+  ],
+  slotChanges: [{ week: 3, playerId: 105, slot: 'BE' }, { week: 3, playerId: 208, slot: 'WR' }],
+  realTrades: [{ id: 'rt1', week: 3, moves: [{ playerId: 107, fromTeamId: 1, toTeamId: 2 }, { playerId: 204, fromTeamId: 2, toTeamId: 1 }] }],
+};
+
+test('undoing a real trade puts its players back from the week it went through', () => {
+  const league = fourTeams(REAL_TRADE);
+  const res = E.simulate(league, { myTeamId: 1, undoTradeId: 'rt1' });
+  assert.deepEqual(res.errors, []);
+  assert.equal(res.mode, 'undo');
+  assert.equal(res.effectiveWeek, 3, 'counts from the first week the players were on their new teams');
+  assert.equal(res.undone.id, 'rt1');
+  assert.deepEqual(res.undone.moves.map((m) => m.name), ['P107', 'P204']);
+
+  // weeks 1-2 are untouched
+  assert.equal(tw(res, 1, 1), undefined);
+  assert.equal(tw(res, 2, 2), undefined);
+  for (const m of res.matchups.filter((x) => x.mp < 3)) assert.deepEqual(m.sim, m.real);
+
+  // team 1 loses 204 (WR, 11) and bench WR 105 (9) fills the hole: back to its week-1 lineup
+  const mine = tw(res, 3, 1);
+  assert.deepEqual(ids(mine.out), [204]);
+  assert.equal(mine.out[0].reason, 'Gone: the trade that brought him here is undone');
+  assert.deepEqual(ids(mine.in), [105]);
+  assert.equal(mine.in[0].reason, 'Off the bench to fill a hole');
+  assert.equal(mine.delta, -2);
+  assert.ok(E.simRosterIds(league, E.resolveOwnership(league, { myTeamId: 1, undoTradeId: 'rt1' }), 4, 1).has(107), '107 stays home');
+
+  // team 2 keeps 204 (proj 12), who out-projects 208 (proj 4) at WR
+  const partner = tw(res, 3, 2);
+  assert.deepEqual(ids(partner.in), [204]);
+  assert.equal(partner.in[0].reason, 'Stays: the trade is undone');
+  assert.deepEqual(ids(partner.out), [208]);
+  assert.equal(partner.delta, 7);
+
+  // team 1 really scored 68, 68, 70, 70; without the trade it scores 68 every week
+  assert.equal(res.standings.real[1].pf, 276);
+  assert.equal(res.standings.sim[1].pf, 272);
+  assert.deepEqual(res.touchedTeams.sort(), [1, 2]);
+});
+
+test('undoing a trade erases a later real trade of one of its players (chains)', () => {
+  const league = fourTeams({
+    rosterChanges: [...REAL_TRADE.rosterChanges, { week: 4, playerId: 107, toTeam: 3, slot: 'BE' }, { week: 4, playerId: 307, toTeam: 2, slot: 'BE' }],
+    slotChanges: REAL_TRADE.slotChanges,
+    realTrades: [
+      ...REAL_TRADE.realTrades,
+      { id: 'rt2', week: 4, moves: [{ playerId: 107, fromTeamId: 2, toTeamId: 3 }, { playerId: 307, fromTeamId: 3, toTeamId: 2 }] },
+    ],
+  });
+  const own = E.resolveOwnership(league, { myTeamId: 1, undoTradeId: 'rt1' });
+  assert.deepEqual(own.erased.map((t) => t.id), ['rt2']);
+  assert.equal(own.erased[0].causedBy, 107);
+  assert.equal(own.overrides.get(107).teamId, 1, '107 never leaves team 1');
+  assert.equal(own.overrides.get(107).kind, 'undone');
+  assert.equal(own.overrides.get(307).teamId, 3, '307 never leaves team 3');
+  assert.ok(E.simRosterIds(league, own, 4, 1).has(107));
+  assert.ok(E.simRosterIds(league, own, 4, 3).has(307) && !E.simRosterIds(league, own, 4, 3).has(107));
+});
+
+test('undoing a trade keeps unrelated real trades, including ones from the same week', () => {
+  const league = fourTeams({
+    rosterChanges: [...REAL_TRADE.rosterChanges, { week: 3, playerId: 301, toTeam: 4, slot: 'QB' }, { week: 3, playerId: 401, toTeam: 3, slot: 'QB' }],
+    slotChanges: REAL_TRADE.slotChanges,
+    realTrades: [
+      ...REAL_TRADE.realTrades,
+      { id: 'rt3', week: 3, moves: [{ playerId: 301, fromTeamId: 3, toTeamId: 4 }, { playerId: 401, fromTeamId: 4, toTeamId: 3 }] },
+    ],
+  });
+  const res = E.simulate(league, { myTeamId: 1, undoTradeId: 'rt1' });
+  assert.equal(res.erased.length, 0);
+  assert.ok(!res.touchedTeams.includes(3) && !res.touchedTeams.includes(4));
+});
+
+test('a trade that went through between weeks counts from the next week', () => {
+  // players first show up on their new teams in week 4, so the trade is placed in week 4
+  const league = fourTeams({
+    rosterChanges: [{ week: 4, playerId: 107, toTeam: 2, slot: 'BE' }, { week: 4, playerId: 207, toTeam: 1, slot: 'BE' }],
+    realTrades: [{ id: 'rt4', week: 4, moves: [{ playerId: 107, fromTeamId: 1, toTeamId: 2 }, { playerId: 207, fromTeamId: 2, toTeamId: 1 }] }],
+  });
+  const res = E.simulate(league, { myTeamId: 1, undoTradeId: 'rt4' });
+  assert.equal(res.effectiveWeek, 4);
+  assert.ok(res.teamWeeks.every((w) => w.sp >= 4));
+  assert.ok(res.matchups.every((m) => m.sim.home === m.real.home), 'bench-for-bench: no score changes');
+});
+
+test('undoing someone else\'s trade changes only their teams\' scores', () => {
+  const league = fourTeams({
+    rosterChanges: [{ week: 2, playerId: 304, toTeam: 4, slot: 'WR' }, { week: 2, playerId: 404, toTeam: 3, slot: 'WR' }],
+    realTrades: [{ id: 'rt5', week: 2, moves: [{ playerId: 304, fromTeamId: 3, toTeamId: 4 }, { playerId: 404, fromTeamId: 4, toTeamId: 3 }] }],
+  });
+  league.players[304].weekly[3].pts = 25;
+  const res = E.simulate(league, { myTeamId: 1, undoTradeId: 'rt5' });
+  assert.deepEqual(res.errors, []);
+  assert.deepEqual(res.touchedTeams.sort(), [3, 4]);
+  assert.equal(tw(res, 3, 3).in[0].playerId, 304, '304 (25 pts in week 3) stays with team 3');
+  assert.ok(!res.touchedTeams.includes(1));
+  for (const m of res.matchups.filter((x) => x.homeId === 1)) assert.equal(m.sim.home, m.real.home);
+});
+
+test('undoing a trade that is not in the list is a clear error', () => {
+  const league = fourTeams(REAL_TRADE);
+  const res = E.simulate(league, { myTeamId: 1, undoTradeId: 'nope' });
+  assert.equal(res.errors.length, 1);
+  assert.match(res.errors[0], /no longer in this season/);
+});
