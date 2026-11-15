@@ -1,6 +1,6 @@
 # Trade Hindsight
 
-A Chrome extension that replays your ESPN fantasy football season as if a trade you never made had gone through. You get re-scored weeks, records and league standings, shown next to what really happened.
+A Chrome extension that replays your ESPN fantasy football season as if a trade you never made had gone through, or as if a trade you did make had never happened. You get re-scored weeks, records and league standings, shown next to what really happened.
 
 **It's read-only.** It only sends GET requests to ESPN's read API (`lm-api-reads.fantasy.espn.com`). It never proposes or accepts trades, changes lineups or touches rosters. `tests/readonly.test.js` fails if that ever changes.
 
@@ -18,17 +18,31 @@ Not affiliated with ESPN.
 
 ## Using it
 
+The switch at the top of the panel has two modes: **Add a trade** (what if I had made this trade?) and **Undo a real trade** (what if I hadn't?).
+
+### Add a trade
+
 1. Check **Your team** (it's detected from your ESPN login when possible) and pick the week the trade happens before.
 2. Pick the team to **Trade with**, then tick the players you send and the players you get. Uneven trades are fine. You can add trades with other teams too.
 
 There's no button to press: the season replays every time you tick or untick a player, change a partner or change the week. Players show their headshot, position and NFL team; fantasy teams show their league logo, or their initials if they have none. Before you build a trade, the panel shows how the season really went. The bar at the bottom of the trade builder keeps your record, seed and points change in view while you scroll through rosters.
+
+### Undo a real trade
+
+1. Click **Undo a real trade** and check **Your team**.
+2. Pick one of **Your trades** (each shows its week, date, the other team and who went each way). Trades between other teams are listed below yours, if you want to see what someone else's trade did to your season.
+
+The season replays without that trade from the week it went through. **Clear and show the real season** takes you back to what really happened.
+
+### Results
 
 The results show your record, points, seed and playoff status (real vs replay), the full league standings, and a week-by-week table. Click a changed week to see who came in, who went out and why.
 
 ## How the replay works
 
 - **The trade stands from its week onward.** Players you send go to the partner, players you get come to you, and they stay there for the rest of the season.
-- **Real trades involving those players are erased.** If a player in your trade (either side) was really traded later, that real trade never happens in the replay: its players stay with their pre-trade teams. This chains to later trades of those players too.
+- **An undone trade never happens from its week onward.** The trade's week is the first week its players showed up on their new teams: a trade made during week 4 is undone from week 4, one made between weeks 5 and 6 from week 6. From then on, every player in it stays with the team that sent him for the rest of the season. Earlier weeks are left exactly as they were.
+- **Real trades involving those players are erased.** If a player in your trade (either side), or in the trade you undid, was really traded later, that real trade never happens in the replay: its players stay with their pre-trade teams. This chains to later trades of those players too.
 - **Lineups change only where the trade forces it.** Real starters stay. A starter who left opens a slot, filled by the best ESPN-projected eligible player on that roster (bench or incoming). An incoming player starts only if his projection for that week beats a current starter. Bench players never replace a starter unless a slot opened up. IR players are never used.
 - **No hindsight in lineups.** Start decisions use ESPN's pre-game projection for the week. Points scored are only used for the score.
 - **Scores.** Replay score = real ESPN score − real points of starters lost + real points of the new starters. Teams the trade doesn't touch keep their real score exactly.
@@ -60,7 +74,7 @@ The results show your record, points, seed and playoff status (real vs replay), 
 ## Development
 
 ```
-npm test          # 40 unit tests: engine, ESPN parsing, read-only guard, logo (Node 18+)
+npm test          # 46 unit tests: engine, ESPN parsing, read-only guard, logo (Node 18+)
 npm run smoke     # needs Playwright: loads the extension in Chromium against a fake league
 npm run icons     # needs Playwright: redraws icons/icon16.png ... icon128.png from src/logo.js
 ```

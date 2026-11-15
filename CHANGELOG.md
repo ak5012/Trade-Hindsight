@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.3.0 (2026-11-14): Undo a real trade
+
+- **New mode: Undo a real trade.** A switch at the top of the panel picks between **Add a trade** (the old builder) and **Undo a real trade**. Pick a trade that really happened and the season replays as if it never went through, shown next to what really happened.
+- **It starts from the trade's week.** A trade counts from the first week its players were on their new teams: one made during week 4 is undone from week 4, one made between weeks 5 and 6 from week 6. Earlier weeks stay exactly as they were.
+- **Your trades first.** The list shows each trade's week, date, the other team, and who went each way (with headshots). Trades between other teams are listed under them, so you can see what someone else's trade did to your season.
+- **Follow-on trades are erased too.** If a player in the undone trade was traded again later, that later trade can't have happened either; the card says how many, and the results list them.
+- The results open with a "Replaying the season without" summary of the trade, and the lineup notes say why each player is in or out ("Stays: the trade is undone").
+
 ## 0.2.1 (2026-11-04): New logo
 
 - **New logo:** a football in flight over a striped field, with yellow speed lines.
